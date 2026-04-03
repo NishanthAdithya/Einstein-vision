@@ -1,0 +1,53 @@
+# Camera intrinsics for all four cameras.
+#
+# Front camera values are confirmed from prior group reports (Group 6).
+# Back/left/right intrinsics are placeholders — the calibration.mat files use
+# MATLAB MCOS objects that cannot be parsed with scipy.io. These should be
+# updated once the values are extracted (e.g., via MATLAB export or manual inspection).
+#
+# The Undist/ videos are already undistorted, so dist_coeffs only matter
+# if processing Raw/ videos directly. All 4 cameras share the same resolution.
+
+front:
+  fx: 1594.7
+  fy: 1607.7
+  cx: 655.2961
+  cy: 414.3627
+  image_width: 1280
+  image_height: 960
+  height_above_ground_m: 1.45
+  pitch_deg: 0.0
+  dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+back:
+  fx: 1594.7
+  fy: 1594.7
+  cx: 640.0
+  cy: 480.0
+  image_width: 1280
+  image_height: 960
+  height_above_ground_m: 1.45
+  pitch_deg: 0.0
+  dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+left:
+  fx: 1200.0
+  fy: 1200.0
+  cx: 640.0
+  cy: 480.0
+  image_width: 1280
+  image_height: 960
+  height_above_ground_m: 1.45
+  pitch_deg: 0.0
+  dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+right:
+  fx: 1200.0
+  fy: 1200.0
+  cx: 640.0
+  cy: 480.0
+  image_width: 1280
+  image_height: 960
+  height_above_ground_m: 1.45
+  pitch_deg: 0.0
+  dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]

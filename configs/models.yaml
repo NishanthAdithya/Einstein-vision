@@ -1,0 +1,48 @@
+# Model selection and hyperparameters.
+# Change the 'model' key under each section to swap implementations.
+# Available values are listed in comments.
+
+depth:
+  model: depth_anything_v2          # depth_anything_v2 | depth_pro
+  model_id: depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf
+  device: cuda
+  batch_size: 8
+
+detection:
+  model: yolo11                     # yolo11
+  yolo11_weights: yolo11x.pt
+  yolo_world_weights: yolov8x-worldv2.pt
+  conf_threshold: 0.30
+  iou_threshold: 0.45
+  open_vocab_classes:
+    - traffic cone
+    - dustbin
+    - barrel
+    - traffic pole
+    - stop sign
+
+lanes:
+  model: yolopv2                    # yolopv2
+  weights_path: weights/yolopv2.pt
+  min_lane_pixels: 200
+  poly_degree: 2
+  bezier_sample_points: 10
+
+tracker:
+  model: bytetrack                  # bytetrack
+  frame_rate: 7.2                   # 36 fps / sample_every_n=5
+  lost_track_buffer: 30
+  track_activation_threshold: 0.25
+  minimum_matching_threshold: 0.80
+  ema_alpha: 0.40
+
+pose:
+  model: rtmw                       # rtmw
+  checkpoint: rtmw-l_8xb64-270e_coco-wholebody-256x192-59b54016_20231219.pth
+  device: cuda
+
+flow:
+  model: raft                       # raft | sea_raft
+  weights: raft-things
+  iters: 20
+  device: cuda

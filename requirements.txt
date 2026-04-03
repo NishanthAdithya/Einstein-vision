@@ -1,0 +1,24 @@
+# Core
+numpy>=1.24
+opencv-python>=4.8
+pyyaml>=6.0
+msgpack>=1.0
+scipy>=1.11
+
+# Phase 1 — detection, depth, tracking
+torch>=2.1
+torchvision>=0.16
+ultralytics>=8.3          # YOLO11 and YOLO-World
+transformers>=4.38        # Depth Anything V2 via HuggingFace
+supervision>=0.27         # ByteTrack
+
+# Phase 2 — pose estimation (mmpose ecosystem)
+# After installing these, run: mim install mmengine mmcv mmdet mmpose
+openmim>=0.3
+
+# Phase 3 — optical flow
+# RAFT weights are downloaded separately; no extra pip dependency needed
+
+# Utilities
+Pillow>=10.0
+tqdm>=4.66

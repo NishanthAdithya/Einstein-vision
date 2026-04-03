@@ -1,0 +1,32 @@
+# Pipeline execution settings.
+
+sample_every_n: 5         # process 1 in every N frames (36fps / 5 = 7.2fps effective)
+camera: front             # front | back | left | right
+phase: 1                  # 1 | 2 | 3  (gates which modules are active)
+
+paths:
+  data_root: P3Data
+  sequences_dir: P3Data/Sequences
+  output_root: outputs
+
+# Camera suffix used in video filenames for each logical camera name
+camera_suffixes:
+  front: front
+  back: back
+  left: left_repeater
+  right: right_repeater
+
+scenes:
+  - scene1
+  - scene2
+  - scene3
+  - scene4
+  - scene5
+  - scene6
+  - scene7
+  - scene8
+  - scene9
+  - scene10
+  - scene11
+  - scene12
+  - scene13
