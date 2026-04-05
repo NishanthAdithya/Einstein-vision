@@ -53,11 +53,28 @@ def _build_lanes(cfg: Dict[str, Any]) -> LaneDetector:
             poly_degree=cfg.get("poly_degree", 2),
             bezier_sample_points=cfg.get("bezier_sample_points", 10),
         )
+    if model == "maskrcnn":
+        from src.perception.lanes.maskrcnn_lane import MaskRCNNLaneDetector
+        return MaskRCNNLaneDetector(
+            weights_path=cfg.get("weights_path", "models/maskrcnn_lane.pth"),
+            device=cfg.get("device", "cuda"),
+            conf_threshold=cfg.get("conf_threshold", 0.50),
+            poly_degree=cfg.get("poly_degree", 2),
+            bezier_points=cfg.get("bezier_points", 10),
+        )
     raise ValueError(f"Unknown lane model: '{model}'")
 
 
 def _build_tracker(cfg: Dict[str, Any]) -> Tracker:
-    model = cfg.get("model", "bytetrack")
+    model = cfg.get("model", "deepsort")
+    if model == "deepsort":
+        from src.perception.tracking.deepsort import DeepSORTTracker
+        return DeepSORTTracker(
+            max_age=cfg.get("max_age", 30),
+            n_init=cfg.get("n_init", 3),
+            max_cosine_dist=cfg.get("max_cosine_dist", 0.4),
+            embedder=cfg.get("embedder", "mobilenet"),
+        )
     if model == "bytetrack":
         from src.perception.tracking.bytetrack import ByteTrackTracker
         return ByteTrackTracker(
@@ -71,7 +88,13 @@ def _build_tracker(cfg: Dict[str, Any]) -> Tracker:
 
 
 def _build_pose(cfg: Dict[str, Any]) -> PoseEstimator:
-    model = cfg.get("model", "rtmw")
+    model = cfg.get("model", "yolo_pose")
+    if model == "yolo_pose":
+        from src.perception.pose.yolo_pose import YOLOPoseEstimator
+        return YOLOPoseEstimator(
+            weights=cfg.get("weights", "yolo11x-pose.pt"),
+            device=cfg.get("device", "cuda"),
+        )
     if model == "rtmw":
         from src.perception.pose.rtmw import RTMWPoseEstimator
         return RTMWPoseEstimator(

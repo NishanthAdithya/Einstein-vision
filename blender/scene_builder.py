@@ -26,15 +26,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import bpy
-import yaml
 
 # ---------------------------------------------------------------------------
-# Resolve project root so we can import src/
+# Resolve project root + vendor (pyyaml/msgpack bundled for Blender's Python)
+# Must happen before any project imports.
 # ---------------------------------------------------------------------------
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPT_DIR.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+_VENDOR_DIR = _SCRIPT_DIR / "vendor"
+for _p in (str(_PROJECT_ROOT), str(_VENDOR_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import yaml
 
 from src.io.calibration_loader import load_camera
 from src.io.schema import FrameData
@@ -46,6 +50,7 @@ import asset_manager
 import camera_setup
 import lane_renderer
 import light_animator
+import pose_renderer
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +96,8 @@ def main() -> None:
         return
 
     msgpack_files = sorted(det_dir.glob("frame_*.msgpack"))
+    if args.max_frames > 0:
+        msgpack_files = msgpack_files[:args.max_frames]
     print(f"[scene_builder] {len(msgpack_files)} frames to render for {scene_id}")
 
     renders_dir = output_root / scene_id / "renders"
@@ -131,6 +138,7 @@ def _render_frame(
     # Remove all previous frame objects (keep camera + lights)
     asset_manager.clear_scene_objects()
     lane_renderer.clear_lanes(frame_idx)
+    pose_renderer.clear_poses()
 
     # ── spawn detection assets ────────────────────────────────────────────────
     for det in frame_data.detections:
@@ -138,17 +146,25 @@ def _render_frame(
             continue
 
         from src.utils.geometry import ego_to_blender
-        # Yaw is forced to 0 — geometric bbox yaw cannot determine heading
-        # direction without 3D detection.  All vehicles face ego-forward (+Y).
-        # Proper heading is Phase 2 work.
-        xyz_b, yaw_b = ego_to_blender(det.pos_3d, 0.0)
+
+        # Use estimated yaw from Phase 1/2 geometry
+        xyz_b, yaw_b = ego_to_blender(det.pos_3d, det.yaw)
+
+        # Phase 2 — use vehicle sub-class for the asset lookup so the
+        # correct 3-D model (sedan/suv/pickup/hatchback) is spawned.
+        effective_class = (
+            det.vehicle_subclass
+            if det.class_name == "car" and det.vehicle_subclass
+            else det.class_name
+        )
 
         obj = asset_manager.spawn_asset(
-            class_name=det.class_name,
+            class_name=effective_class,
             pos_ego=tuple(xyz_b),
             yaw_rad=yaw_b,
             assets_root=assets_root,
             track_id=det.track_id,
+            speed_limit=det.speed_limit,
         )
 
         if obj is None:
@@ -160,12 +176,40 @@ def _render_frame(
                 light_animator.apply_brake_light(obj, det.brake_light_on)
             if det.turn_signal:
                 light_animator.apply_turn_signal(
-                    obj, det.turn_signal, frame=frame_idx
+                    obj, det.turn_signal, frame=frame_idx, fps=36.0
                 )
 
-        # Traffic light colour
-        if det.class_name == "traffic light" and det.traffic_light_state is not None:
-            light_animator.set_traffic_light_colour(obj, det.traffic_light_state)
+        # Traffic light colour + arrow (Phase 2+)
+        if det.class_name == "traffic light":
+            state = det.traffic_light_state or "red"
+            light_animator.set_traffic_light_colour(obj, state)
+            if det.traffic_light_arrow:
+                light_animator.set_traffic_light_arrow(
+                    obj, det.traffic_light_arrow, state
+                )
+
+    # ── pedestrian poses (Phase 2+) ───────────────────────────────────────────
+    if phase >= 2 and frame_data.poses:
+        # Inject pos_3d and depth from matched person detections into each pose
+        person_dets = [d for d in frame_data.detections if d.class_name == "person" and d.pos_3d]
+        from src.utils.geometry import ego_to_blender as _e2b
+        for pose in frame_data.poses:
+            # Match by bbox centre proximity
+            px = (pose.bbox.x1 + pose.bbox.x2) / 2
+            py = (pose.bbox.y1 + pose.bbox.y2) / 2
+            best, best_dist = None, 1e9
+            for det in person_dets:
+                dx = (det.bbox.x1 + det.bbox.x2) / 2 - px
+                dy = (det.bbox.y1 + det.bbox.y2) / 2 - py
+                dist = dx * dx + dy * dy
+                if dist < best_dist:
+                    best_dist = dist
+                    best = det
+            if best and best_dist < 200 ** 2:
+                xyz_b, _ = _e2b(best.pos_3d, 0.0)
+                pose.pos_3d = tuple(xyz_b)
+                pose.depth = best.depth
+        pose_renderer.render_poses(frame_data.poses, frame_idx)
 
     # ── lane lines ────────────────────────────────────────────────────────────
     lane_renderer.render_lanes(frame_data.lanes, frame_idx)
@@ -261,10 +305,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--assets-root",     default="P3Data/Assets")
     p.add_argument("--cameras-config",  default="configs/cameras.yaml")
     p.add_argument("--phase",           type=int, default=1)
-    p.add_argument("--engine",          default="CYCLES",
+    p.add_argument("--engine",          default="BLENDER_EEVEE",
                    choices=["CYCLES", "BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"])
-    p.add_argument("--samples",         type=int, default=64)
+    p.add_argument("--samples",         type=int, default=8)
     p.add_argument("--force",           action="store_true")
+    p.add_argument("--max-frames",      type=int, default=0,
+                   help="Only render first N frames (0 = all)")
     return p.parse_args(argv)
 
 

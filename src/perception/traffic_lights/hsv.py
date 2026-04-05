@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -112,3 +112,131 @@ def _dominant_colour(crop_hsv: np.ndarray) -> str | None:
     if best_ratio == yellow_ratio:
         return "yellow"
     return "green"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Arrow detection
+# ---------------------------------------------------------------------------
+
+# Circularity = 4π·area/perimeter² ; a perfect circle = 1.0.
+# Arrows are elongated/pointed so their circularity is well below this.
+_ARROW_CIRCULARITY_MAX = 0.70
+_ARROW_MIN_AREA_PX     = 50
+
+
+def classify_traffic_light_arrows(
+    detections: List[Detection],
+    frame_bgr: np.ndarray,
+) -> List[Detection]:
+    """Detect arrow direction for every traffic-light detection in-place.
+
+    Runs only on detections that already have a traffic_light_state set.
+    Sets det.traffic_light_arrow to 'left', 'right', 'straight', or None
+    (None means the lit region is a solid round bulb, not an arrow).
+
+    Args:
+        detections: All detections; non-traffic-light entries are skipped.
+        frame_bgr:  uint8 BGR frame.
+
+    Returns:
+        The same list with traffic_light_arrow updated.
+    """
+    h_img, w_img = frame_bgr.shape[:2]
+
+    for det in detections:
+        if det.class_name != "traffic light":
+            continue
+        if det.traffic_light_state is None:
+            continue
+
+        x1 = max(0, int(det.bbox.x1))
+        y1 = max(0, int(det.bbox.y1))
+        x2 = min(w_img, int(det.bbox.x2))
+        y2 = min(h_img, int(det.bbox.y2))
+        if (x2 - x1) * (y2 - y1) < _MIN_CROP_AREA_PX:
+            continue
+
+        crop_bgr = frame_bgr[y1:y2, x1:x2]
+        det.traffic_light_arrow = _detect_arrow(crop_bgr, det.traffic_light_state)
+
+    return detections
+
+
+def _build_colour_mask(crop_hsv: np.ndarray, colour: str) -> np.ndarray:
+    """Return a binary mask for the active traffic light colour."""
+    if colour == "red":
+        m1 = cv2.inRange(crop_hsv,
+                         np.array([_RED_H_LO1, _RED_S_MIN, _RED_V_MIN]),
+                         np.array([_RED_H_HI1, 255, 255]))
+        m2 = cv2.inRange(crop_hsv,
+                         np.array([_RED_H_LO2, _RED_S_MIN, _RED_V_MIN]),
+                         np.array([179, 255, 255]))
+        return cv2.bitwise_or(m1, m2)
+    if colour == "yellow":
+        return cv2.inRange(crop_hsv,
+                           np.array([_YELLOW_H_LO, _YELLOW_S_MIN, _YELLOW_V_MIN]),
+                           np.array([_YELLOW_H_HI, 255, 255]))
+    # green
+    return cv2.inRange(crop_hsv,
+                       np.array([_GREEN_H_LO, _GREEN_S_MIN, _GREEN_V_MIN]),
+                       np.array([_GREEN_H_HI, 255, 255]))
+
+
+def _detect_arrow(crop_bgr: np.ndarray, colour: str) -> Optional[str]:
+    """Return arrow direction ('left'/'right'/'straight') or None.
+
+    Strategy:
+    1. Extract the lit colour region as a binary mask.
+    2. Find the largest contour.
+    3. Compute circularity — below threshold → arrow shape.
+    4. Use the orientation of the minimum-area bounding rectangle to
+       decide direction: horizontal bounding → left/right (side of
+       centroid decides which); vertical bounding → straight.
+    """
+    crop_hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+    mask = _build_colour_mask(crop_hsv, colour)
+
+    # Morphological clean-up
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    cnt = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(cnt)
+    if area < _ARROW_MIN_AREA_PX:
+        return None
+
+    perimeter = cv2.arcLength(cnt, True)
+    if perimeter < 1e-3:
+        return None
+
+    circularity = 4.0 * np.pi * area / (perimeter ** 2)
+    if circularity > _ARROW_CIRCULARITY_MAX:
+        return None  # round bulb — no arrow
+
+    # Arrow detected: determine direction from bounding rect orientation
+    rect = cv2.minAreaRect(cnt)   # (centre, (w, h), angle)
+    rw, rh = rect[1]
+    if rw == 0 or rh == 0:
+        return "straight"
+
+    aspect = max(rw, rh) / min(rw, rh)
+    if aspect < 1.4:
+        # Almost square — treat as straight (e.g. U-turn symbol)
+        return "straight"
+
+    # Wide rectangle → horizontal arrow (left or right)
+    if rw >= rh:
+        M = cv2.moments(cnt)
+        if M["m00"] > 0:
+            cx = M["m10"] / M["m00"]
+            return "right" if cx > crop_bgr.shape[1] / 2.0 else "left"
+        return "straight"
+
+    # Tall rectangle → vertical / straight arrow
+    return "straight"

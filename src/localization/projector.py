@@ -13,6 +13,16 @@ from src.localization.camera import Camera
 # because depth predictions are often noisy at object boundaries.
 _DEPTH_PATCH_HALF = 4   # 9×9 window
 
+# Typical heights (metres) used for perspective-based depth fallback when
+# the depth map returns an unreliable value (< _MIN_RELIABLE_DEPTH).
+_MIN_RELIABLE_DEPTH = 1.0   # metres; below this the depth is suspect
+_CLASS_HEIGHTS = {
+    "car": 1.5, "sedan": 1.5, "hatchback": 1.4, "suv": 1.8, "pickup": 1.9,
+    "truck": 3.5, "bus": 3.2, "motorcycle": 1.2, "bicycle": 1.1,
+    "person": 1.75, "traffic light": 4.0, "stop sign": 2.5,
+    "traffic cone": 0.7, "traffic cylinder": 0.9,
+}
+
 
 def lift_detections(
     detections: List[Detection],
@@ -38,6 +48,14 @@ def lift_detections(
     for det in detections:
         u, v = det.bbox.center          # (col, row) floats
         depth = _sample_depth(depth_map, u, v, h, w)
+
+        # Fallback: depth map returned an unreliable near-zero value.
+        # Estimate distance using the bbox height and known real-world height.
+        if depth < _MIN_RELIABLE_DEPTH:
+            typical_h = _CLASS_HEIGHTS.get(det.class_name, 1.5)
+            bbox_px_h = max(1.0, det.bbox.y2 - det.bbox.y1)
+            depth = float(camera.config.fy) * typical_h / bbox_px_h
+            depth = max(depth, _MIN_RELIABLE_DEPTH)
 
         x_cam, y_cam, z_cam = camera.unproject(u, v, depth)
         xyz_cam = np.array([[x_cam, y_cam, z_cam]])

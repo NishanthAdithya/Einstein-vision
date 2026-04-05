@@ -16,29 +16,32 @@ detection:
   iou_threshold: 0.45
   open_vocab_classes:
     - traffic cone
+    - traffic cylinder
+    - traffic pole
     - dustbin
     - barrel
-    - traffic pole
     - stop sign
+    - speed limit sign
+    - road arrow marking
 
 lanes:
-  model: yolopv2                    # yolopv2
-  weights_path: weights/yolopv2.pt
-  min_lane_pixels: 200
+  model: maskrcnn                   # maskrcnn | yolopv2
+  weights_path: models/maskrcnn_lane.pth
+  device: cuda
+  conf_threshold: 0.50
   poly_degree: 2
-  bezier_sample_points: 10
+  bezier_points: 10
 
 tracker:
-  model: bytetrack                  # bytetrack
-  frame_rate: 7.2                   # 36 fps / sample_every_n=5
-  lost_track_buffer: 30
-  track_activation_threshold: 0.25
-  minimum_matching_threshold: 0.80
-  ema_alpha: 0.40
+  model: deepsort                   # deepsort | bytetrack
+  max_age: 30
+  n_init: 3
+  max_cosine_dist: 0.4
+  embedder: mobilenet
 
 pose:
-  model: rtmw                       # rtmw
-  checkpoint: rtmw-l_8xb64-270e_coco-wholebody-256x192-59b54016_20231219.pth
+  model: yolo_pose                  # yolo_pose | rtmw
+  weights: yolo11x-pose.pt          # auto-downloaded on first run
   device: cuda
 
 flow:
@@ -46,3 +49,6 @@ flow:
   weights: raft-things
   iters: 20
   device: cuda
+
+vehicle_subclassifier:
+  device: cuda                      # cuda | cpu

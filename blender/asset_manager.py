@@ -17,21 +17,30 @@ import bpy
 # ---------------------------------------------------------------------------
 
 _ASSET_MAP: Dict[str, str] = {
-    # Vehicles
-    "car":          "Vehicles/SedanAndHatchback.blend",
-    "truck":        "Vehicles/Truck.blend",
-    "bus":          "Vehicles/Truck.blend",           # closest available
-    "motorcycle":   "Vehicles/Motorcycle.blend",
-    "bicycle":      "Vehicles/Bicycle.blend",
+    # Vehicles — generic
+    "car":              "Vehicles/SedanAndHatchback.blend",
+    "truck":            "Vehicles/Truck.blend",
+    "bus":              "Vehicles/Truck.blend",           # closest available
+    "motorcycle":       "Vehicles/Motorcycle.blend",
+    "bicycle":          "Vehicles/Bicycle.blend",
+    # Phase 2 — vehicle sub-classes
+    "sedan":            "Vehicles/SedanAndHatchback.blend",
+    "hatchback":        "Vehicles/SedanAndHatchback.blend",
+    "suv":              "Vehicles/SUV.blend",
+    "pickup":           "Vehicles/PickupTruck.blend",
     # People
-    "person":       "Pedestrain.blend",
+    "person":           "Pedestrain.blend",
     # Traffic furniture
-    "traffic light": "TrafficSignal.blend",
-    "stop sign":    "StopSign.blend",
-    "traffic cone": "TrafficConeAndCylinder.blend",
-    "dustbin":      "Dustbin.blend",
-    "barrel":       "TrafficConeAndCylinder.blend",
-    "fire hydrant": "TrafficConeAndCylinder.blend",   # placeholder
+    "traffic light":    "TrafficSignal.blend",
+    "stop sign":        "StopSign.blend",
+    "traffic cone":     "TrafficConeAndCylinder.blend",
+    "traffic cylinder": "TrafficConeAndCylinder.blend",
+    "traffic pole":     "TrafficAssets.blend",
+    "dustbin":          "Dustbin.blend",
+    "barrel":           "TrafficConeAndCylinder.blend",
+    "fire hydrant":     "TrafficConeAndCylinder.blend",   # placeholder
+    # Phase 2 — road signs
+    "speed limit sign": "SpeedLimitSign.blend",
 }
 
 # Per-asset base rotation (rx, ry, rz) in radians that restores the asset to
@@ -43,14 +52,24 @@ _ASSET_MAP: Dict[str, str] = {
 #   truck/suv:              no baked rotation   → (0, 0, 0)
 # The predicted yaw is added to the rz component on top of this base.
 _ROTATION_OFFSET_MAP: Dict[str, Tuple[float, float, float]] = {
-    "car":           (0.0,            0.0, 0.0),
-    "truck":         (0.0,            0.0, 0.0),
-    "bus":           (0.0,            0.0, 0.0),
-    "motorcycle":    (math.pi / 2,    0.0, 0.0),
-    "bicycle":       (math.pi / 2,    0.0, 0.0),
-    "person":        (math.pi / 2,    0.0, 0.0),
-    "traffic light": (math.pi / 2,    0.0, 0.0),
-    "stop sign":     (math.pi / 2,    0.0, 0.0),
+    # Vehicles: assets baked with side-on orientation, rotate 90° on Z to face forward
+    "car":              (0.0,         0.0, math.pi / 2),
+    "sedan":            (0.0,         0.0, math.pi / 2),
+    "hatchback":        (0.0,         0.0, math.pi / 2),
+    "suv":              (0.0,         0.0, math.pi / 2),
+    "pickup":           (0.0,         0.0, math.pi / 2),
+    "truck":            (0.0,         0.0, math.pi / 2),
+    "bus":              (0.0,         0.0, math.pi / 2),
+    "motorcycle":       (math.pi / 2, 0.0, math.pi / 2),
+    "bicycle":          (math.pi / 2, 0.0, math.pi / 2),
+    # People: upright with 90° X to stand up, face toward ego
+    "person":           (math.pi / 2, 0.0, math.pi),
+    # Traffic light: upright, faces toward ego (-Y = toward camera origin)
+    "traffic light":    (math.pi / 2, 0.0, math.pi),
+    # Signs: upright, face toward ego
+    "stop sign":        (math.pi / 2, 0.0, math.pi),
+    "speed limit sign": (math.pi / 2, 0.0, math.pi),
+    "traffic pole":     (math.pi / 2, 0.0, 0.0),
 }
 
 # Scale factors to normalise each asset to real-world metres.
@@ -58,18 +77,25 @@ _ROTATION_OFFSET_MAP: Dict[str, Tuple[float, float, float]] = {
 # Derived by measuring the asset's local bounding box and dividing the
 # target real-world dimension (longest axis) by the local max dimension.
 _SCALE_MAP: Dict[str, float] = {
-    "car":           0.020,   # local 231m → ~4.5m
-    "truck":         0.001,   # local 8937m → ~8.5m
-    "bus":           0.001,   # uses Truck asset
-    "motorcycle":    0.012,   # local 178m → ~2.2m
-    "bicycle":       0.14,    # local 12.7m → ~1.8m
-    "person":        0.022,   # local 31m (Z) → ~1.75m (empirically halved after render check)
-    "traffic light": 1.14,    # local 3.5m → ~4.0m
-    "stop sign":     0.37,    # local 6.7m → ~2.5m
-    "traffic cone":  1.0,
-    "dustbin":       1.0,
-    "barrel":        1.0,
-    "fire hydrant":  0.6,
+    "car":              0.020,   # local 231m → ~4.5m
+    "sedan":            0.020,
+    "hatchback":        0.020,
+    "suv":              0.020,   # tune after inspecting SUV.blend bounding box
+    "pickup":           0.018,   # tune after inspecting PickupTruck.blend bounding box
+    "truck":            0.001,   # local 8937m → ~8.5m
+    "bus":              0.001,   # uses Truck asset
+    "motorcycle":       0.012,   # local 178m → ~2.2m
+    "bicycle":          0.14,    # local 12.7m → ~1.8m
+    "person":           0.022,   # local 31m (Z) → ~1.75m
+    "traffic light":    1.14,    # local 3.5m → ~4.0m
+    "stop sign":        0.37,    # local 6.7m → ~2.5m
+    "speed limit sign": 0.37,    # same pole height as stop sign
+    "traffic pole":     1.0,
+    "traffic cone":     1.0,
+    "traffic cylinder": 1.0,
+    "dustbin":          1.0,
+    "barrel":           1.0,
+    "fire hydrant":     0.6,
 }
 
 # Cache of already-loaded library objects: blend_path → object name in scene
@@ -86,15 +112,18 @@ def spawn_asset(
     yaw_rad: float,
     assets_root: str | Path,
     track_id: Optional[int] = None,
+    speed_limit: Optional[int] = None,
 ) -> Optional[bpy.types.Object]:
     """Spawn one asset at the given ego-frame position.
 
     Args:
-        class_name:  Detection class name (e.g. 'car', 'person').
+        class_name:  Detection class name (e.g. 'car', 'sedan', 'suv').
         pos_ego:     (X, Y, Z) in ego frame, metres.
-        yaw_rad:     Yaw rotation in Blender convention (negative of ego yaw).
+        yaw_rad:     Yaw rotation in Blender convention.
         assets_root: Path to P3Data/Assets/.
         track_id:    Optional track ID used to name the object for animation.
+        speed_limit: Detected speed limit value (only used when class_name is
+                     'speed limit sign'); triggers number texture generation.
 
     Returns:
         The spawned Blender object, or None if no asset exists for this class.
@@ -126,13 +155,15 @@ def spawn_asset(
     instance.location = (x, y, z)
 
     # Restore the asset's canonical orientation then add predicted yaw on Z.
-    # Each asset has a different baked rotation that must be preserved so the
-    # model is upright and forward-facing before our yaw correction is applied.
     base_rx, base_ry, base_rz = _ROTATION_OFFSET_MAP.get(class_name, (0.0, 0.0, 0.0))
     instance.rotation_euler = (base_rx, base_ry, base_rz + yaw_rad)
 
     scale = _SCALE_MAP.get(class_name, 1.0)
     instance.scale = (scale, scale, scale)
+
+    # Phase 2 — apply speed limit number texture on the sign instance
+    if class_name == "speed limit sign" and speed_limit is not None:
+        _apply_speed_limit_texture(instance, speed_limit)
 
     return instance
 
@@ -200,6 +231,86 @@ def _get_or_load_asset(
 
     _loaded_cache[key] = mesh_obj.name
     return mesh_obj
+
+
+def _apply_speed_limit_texture(obj: bpy.types.Object, speed_limit: int) -> None:
+    """Generate a number texture for the speed limit sign and apply it.
+
+    Uses PIL to render the number onto a white background, loads the image
+    into Blender, and wires it into the sign mesh's material.
+
+    Args:
+        obj:         The speed limit sign instance (already duplicated).
+        speed_limit: Integer speed limit to display, e.g. 35.
+    """
+    import os
+    import tempfile
+
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return  # Pillow not available inside Blender — skip texture
+
+    if not obj.data or not obj.data.materials:
+        return
+
+    # ── generate texture ───────────────────────────────────────────────────
+    size = 512
+    img = Image.new("RGB", (size, size), "white")
+    draw = ImageDraw.Draw(img)
+
+    # Draw a red border (speed limit signs have a red ring)
+    border = 30
+    draw.ellipse([border, border, size - border, size - border],
+                 outline="red", width=20)
+
+    # Draw the number
+    text = str(speed_limit)
+    font_size = 180
+    font = None
+    for font_name in ("arial.ttf", "DejaVuSans-Bold.ttf", "FreeSansBold.ttf"):
+        try:
+            font = ImageFont.truetype(font_name, font_size)
+            break
+        except OSError:
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+
+    bbox_t = draw.textbbox((0, 0), text, font=font)
+    tw = bbox_t[2] - bbox_t[0]
+    th = bbox_t[3] - bbox_t[1]
+    draw.text(((size - tw) // 2, (size - th) // 2), text, fill="black", font=font)
+
+    # ── load into Blender ──────────────────────────────────────────────────
+    img_name = f"SpeedLimit_{speed_limit}"
+    bpy_img = bpy.data.images.get(img_name)
+    if bpy_img is None:
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        img.save(tmp.name)
+        tmp.close()
+        bpy_img = bpy.data.images.load(tmp.name)
+        bpy_img.name = img_name
+        os.unlink(tmp.name)
+
+    # ── wire into material ─────────────────────────────────────────────────
+    mat = obj.data.materials[0]
+    if mat is None:
+        return
+    mat = mat.copy()                          # don't modify the template's material
+    obj.data.materials[0] = mat
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+
+    tex  = nodes.new("ShaderNodeTexImage")
+    tex.image = bpy_img
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.inputs["Roughness"].default_value = 0.6
+    out  = nodes.new("ShaderNodeOutputMaterial")
+    links.new(tex.outputs["Color"],  bsdf.inputs["Base Color"])
+    links.new(bsdf.outputs["BSDF"],  out.inputs["Surface"])
 
 
 def _apply_stop_sign_texture(obj: bpy.types.Object, assets_root: Path) -> None:
