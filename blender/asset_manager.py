@@ -65,10 +65,11 @@ _ROTATION_OFFSET_MAP: Dict[str, Tuple[float, float, float]] = {
     # People: upright with 90° X to stand up, face toward ego
     "person":           (math.pi / 2, 0.0, math.pi),
     # Traffic light: upright, faces toward ego.
-    # TrafficSignal.blend local axes: Y=tall, X=face-forward, Z=lateral.
+    # TrafficSignal.blend local axes: Y=tall (3.5m), X=face (normals ±X), Z=lateral.
     # Target: local Y→world Z (up), local X→world -Y (toward camera).
-    # Solved: R = Rx(π/2) @ Ry(-π/2) gives that mapping.
-    "traffic light":    (math.pi / 2, -math.pi / 2, 0.0),
+    # Blender XYZ euler: R = Rz @ Ry @ Rx
+    # (π/2, 0, -π/2): Rz(-π/2)@Rx(π/2) → local X→world -Y ✓, local Y→world Z ✓
+    "traffic light":    (math.pi / 2, 0.0, -math.pi / 2),
     # Signs: upright, face toward ego
     "stop sign":        (math.pi / 2, 0.0, math.pi),
     "speed limit sign": (math.pi / 2, 0.0, math.pi),
@@ -107,6 +108,15 @@ _loaded_cache: Dict[str, str] = {}
 # Object names that persist across frames and must not be deleted by
 # clear_scene_objects (e.g. ground plane created once in main()).
 _STATIC_OBJECTS: frozenset = frozenset({"GroundPlane"})
+
+# Vehicle class names that receive per-track-ID colouring
+_VEHICLE_CLASSES = frozenset({
+    "car", "sedan", "hatchback", "suv", "pickup",
+    "truck", "bus", "motorcycle", "bicycle",
+})
+
+# Visually distinct hues (0–1) cycled by track_id for vehicle colouring
+_TRACK_HUES = [0.0, 0.08, 0.18, 0.33, 0.50, 0.58, 0.67, 0.75, 0.83, 0.92]
 
 
 def spawn_asset(
@@ -167,6 +177,10 @@ def spawn_asset(
     # Phase 2 — apply speed limit number texture on the sign instance
     if class_name == "speed limit sign" and speed_limit is not None:
         _apply_speed_limit_texture(instance, speed_limit)
+
+    # Apply per-track colour to vehicles so each tracked object is distinguishable
+    if class_name in _VEHICLE_CLASSES and track_id is not None:
+        _apply_track_colour(instance, track_id)
 
     return instance
 
@@ -318,6 +332,42 @@ def _apply_speed_limit_texture(obj: bpy.types.Object, speed_limit: int) -> None:
     out  = nodes.new("ShaderNodeOutputMaterial")
     links.new(tex.outputs["Color"],  bsdf.inputs["Base Color"])
     links.new(bsdf.outputs["BSDF"],  out.inputs["Surface"])
+
+
+def _apply_track_colour(obj: bpy.types.Object, track_id: int) -> None:
+    """Apply a stable per-track-ID colour to a vehicle mesh instance.
+
+    Creates one shared Principled BSDF material per track_id (cached in
+    bpy.data.materials) and assigns it to the instance's first material slot.
+    Colours are drawn from _TRACK_HUES cycled by track_id, giving each tracked
+    vehicle a distinct paint colour that is consistent across all frames.
+    """
+    import colorsys
+
+    mat_name = f"Vehicle_Track_{track_id}"
+    if mat_name not in bpy.data.materials:
+        hue = _TRACK_HUES[track_id % len(_TRACK_HUES)]
+        r, g, b = colorsys.hsv_to_rgb(hue, 0.75, 0.80)
+
+        mat = bpy.data.materials.new(mat_name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        nodes.clear()
+
+        bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+        bsdf.inputs["Base Color"].default_value  = (r, g, b, 1.0)
+        bsdf.inputs["Roughness"].default_value   = 0.4
+        bsdf.inputs["Metallic"].default_value    = 0.1
+        out = nodes.new("ShaderNodeOutputMaterial")
+        links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+
+    mat = bpy.data.materials[mat_name]
+    if obj.data and hasattr(obj.data, "materials"):
+        if not obj.data.materials:
+            obj.data.materials.append(mat)
+        else:
+            obj.data.materials[0] = mat
 
 
 def _apply_stop_sign_texture(obj: bpy.types.Object, assets_root: Path) -> None:

@@ -180,7 +180,7 @@ def _render_frame(
                     obj, det.turn_signal, frame=frame_idx, fps=36.0
                 )
 
-        # Traffic light colour + arrow (Phase 2+)
+        # Traffic light colour + arrow + pole (Phase 2+)
         if det.class_name == "traffic light":
             state = det.traffic_light_state or "red"
             light_animator.set_traffic_light_colour(obj, state)
@@ -188,6 +188,7 @@ def _render_frame(
                 light_animator.set_traffic_light_arrow(
                     obj, det.traffic_light_arrow, state
                 )
+            _spawn_tl_pole(obj)
 
     # ── pedestrian poses (Phase 2+) ───────────────────────────────────────────
     if phase >= 2 and frame_data.poses:
@@ -223,6 +224,40 @@ def _render_frame(
 # ---------------------------------------------------------------------------
 # Scene helpers
 # ---------------------------------------------------------------------------
+
+def _spawn_tl_pole(tl_obj: bpy.types.Object) -> None:
+    """Add a slim pole cylinder from the ground up to the traffic light base.
+
+    The pole is placed at the same (X, Y) as the traffic light, running from
+    Z=0 to Z=tl_obj.location.z - 0.6 (leaving room for the housing body).
+    """
+    x, y, z = tl_obj.location
+    pole_height = max(0.5, z - 0.6)
+    pole_z_centre = pole_height / 2.0
+
+    bpy.ops.mesh.primitive_cylinder_add(
+        radius=0.06,
+        depth=pole_height,
+        location=(x, y, pole_z_centre),
+    )
+    pole = bpy.context.active_object
+    pole.name = f"{tl_obj.name}_pole"
+
+    # Dark gray pole material (shared)
+    mat_name = "TL_Pole"
+    if mat_name not in bpy.data.materials:
+        mat = bpy.data.materials.new(mat_name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        nodes.clear()
+        bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+        bsdf.inputs["Base Color"].default_value = (0.08, 0.08, 0.08, 1.0)
+        bsdf.inputs["Roughness"].default_value  = 0.8
+        out = nodes.new("ShaderNodeOutputMaterial")
+        links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+    pole.data.materials.append(bpy.data.materials["TL_Pole"])
+
 
 def _create_ground_plane() -> None:
     """Add a large flat ground plane at Z=0 with a dark asphalt material.
@@ -276,16 +311,17 @@ def _setup_world_lighting() -> None:
     world.use_nodes = True
     bg_node = world.node_tree.nodes.get("Background")
     if bg_node:
-        bg_node.inputs["Color"].default_value = (0.25, 0.28, 0.35, 1.0)  # darker overcast sky
-        bg_node.inputs["Strength"].default_value = 0.6
+        bg_node.inputs["Color"].default_value = (0.30, 0.32, 0.38, 1.0)  # cool overcast sky
+        bg_node.inputs["Strength"].default_value = 0.5
 
-    # Add a sun lamp for directional lighting
+    # Add a warm sun lamp for directional lighting + contrast
     if "EinsteinSun" not in bpy.data.objects:
         bpy.ops.object.light_add(type="SUN", location=(0, 0, 20))
         sun = bpy.context.active_object
         sun.name = "EinsteinSun"
-        sun.data.energy = 2.0
-        sun.rotation_euler = (math.radians(60), 0, math.radians(45))
+        sun.data.energy = 2.5
+        sun.data.color = (1.0, 0.92, 0.80)          # warm white
+        sun.rotation_euler = (math.radians(50), 0, math.radians(30))
 
 
 # ---------------------------------------------------------------------------

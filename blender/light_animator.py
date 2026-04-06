@@ -102,38 +102,83 @@ def set_traffic_light_colour(
     if found_any:
         return
 
-    # ── strategy 2: apply coloured emission material to the mesh ─────────────
-    # Three shared materials (one per state) are created once and reused.
-    # Each instance already has a COPY of the mesh data (from spawn_asset),
-    # so assigning a shared material here is safe.
-    mat_name = f"TL_State_{state}"
+    # ── strategy 2: dark housing + glowing bulb sphere in front of face ─────────
+    # Apply a shared dark-gray material to the whole housing so it reads as a
+    # black box.  Then add/reuse a small emissive sphere parented to the object
+    # at the active bulb position in front of the face (world -Y direction after
+    # our rotation fix maps local X → world -Y).
+    _apply_dark_housing(obj)
+    _ensure_bulb_sphere(obj, state)
+
+
+def _apply_dark_housing(obj: bpy.types.Object) -> None:
+    """Assign a shared dark-gray matte material to a traffic light housing."""
+    mat_name = "TL_Housing"
     if mat_name not in bpy.data.materials:
-        colour = _BULB_COLOURS[state]
         mat = bpy.data.materials.new(mat_name)
         mat.use_nodes = True
         nodes = mat.node_tree.nodes
         links = mat.node_tree.links
         nodes.clear()
-
-        # Dark diffuse housing + strong emission tint
-        mix   = nodes.new("ShaderNodeMixShader")
-        diff  = nodes.new("ShaderNodeBsdfDiffuse")
-        diff.inputs["Color"].default_value = (0.05, 0.05, 0.05, 1.0)
-        emit  = nodes.new("ShaderNodeEmission")
-        emit.inputs["Color"].default_value    = colour
-        emit.inputs["Strength"].default_value = 6.0
-        mix.inputs["Fac"].default_value = 0.65   # 65% emission, 35% dark diffuse
+        bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+        bsdf.inputs["Base Color"].default_value = (0.04, 0.04, 0.04, 1.0)
+        bsdf.inputs["Roughness"].default_value  = 0.9
         out = nodes.new("ShaderNodeOutputMaterial")
-        links.new(diff.outputs["BSDF"],       mix.inputs[1])
-        links.new(emit.outputs["Emission"],   mix.inputs[2])
-        links.new(mix.outputs["Shader"],      out.inputs["Surface"])
-
-    mat = bpy.data.materials[mat_name]
+        links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+    mat = bpy.data.materials["TL_Housing"]
     if obj.data and hasattr(obj.data, "materials"):
         if not obj.data.materials:
             obj.data.materials.append(mat)
         else:
             obj.data.materials[0] = mat
+
+
+def _ensure_bulb_sphere(obj: bpy.types.Object, state: str) -> None:
+    """Create or update an emissive sphere at the active bulb position.
+
+    The sphere is placed in world space directly in front of the signal face
+    (offset -0.6 m in world Y, which is the camera direction after our
+    rotation fix) at the correct vertical offset for the active state.
+    The sphere is NOT parented so it stays at world coords each frame.
+    Old spheres from previous frames are cleaned up by clear_scene_objects.
+    """
+    sphere_name = f"{obj.name}_bulb"
+    # Remove any existing bulb sphere for this TL instance
+    old = bpy.data.objects.get(sphere_name)
+    if old is not None:
+        mesh = old.data
+        bpy.data.objects.remove(old, do_unlink=True)
+        if mesh and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+
+    colour = _BULB_COLOURS.get(state, _BULB_COLOURS["red"])
+    z_off  = _BULB_OFFSETS.get(state, 0.0)
+    x, y, z = obj.location
+
+    bpy.ops.mesh.primitive_uv_sphere_add(
+        radius=0.18, segments=10, ring_count=6,
+        location=(x, y - 0.6, z + z_off),   # 0.6 m in front of face (world -Y)
+    )
+    sphere = bpy.context.active_object
+    sphere.name = sphere_name
+
+    mat_name = f"TL_Bulb_{state}"
+    if mat_name not in bpy.data.materials:
+        mat = bpy.data.materials.new(mat_name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        nodes.clear()
+        emit = nodes.new("ShaderNodeEmission")
+        emit.inputs["Color"].default_value    = colour
+        emit.inputs["Strength"].default_value = 12.0
+        out = nodes.new("ShaderNodeOutputMaterial")
+        links.new(emit.outputs["Emission"], out.inputs["Surface"])
+    mat = bpy.data.materials[mat_name]
+    if not sphere.data.materials:
+        sphere.data.materials.append(mat)
+    else:
+        sphere.data.materials[0] = mat
 
 
 def set_traffic_light_arrow(
