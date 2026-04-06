@@ -60,14 +60,15 @@ import pose_renderer
 def main() -> None:
     args = _parse_args()
 
-    output_root   = Path(args.output_root)
-    assets_root   = Path(args.assets_root)
+    # Resolve relative paths against the project root (Blender may change CWD)
+    output_root   = (_PROJECT_ROOT / args.output_root).resolve()
+    assets_root   = (_PROJECT_ROOT / args.assets_root).resolve()
     scene_id      = args.scene
     phase         = args.phase
     render_engine = args.engine
     samples       = args.samples
 
-    cam_cfg = load_camera("front", args.cameras_config)
+    cam_cfg = load_camera("front", str(_PROJECT_ROOT / args.cameras_config))
 
     # ── one-time Blender scene setup ─────────────────────────────────────────
     _reset_scene()
@@ -275,15 +276,15 @@ def _setup_world_lighting() -> None:
     world.use_nodes = True
     bg_node = world.node_tree.nodes.get("Background")
     if bg_node:
-        bg_node.inputs["Color"].default_value = (0.6, 0.65, 0.75, 1.0)  # overcast sky
-        bg_node.inputs["Strength"].default_value = 1.5
+        bg_node.inputs["Color"].default_value = (0.25, 0.28, 0.35, 1.0)  # darker overcast sky
+        bg_node.inputs["Strength"].default_value = 0.6
 
     # Add a sun lamp for directional lighting
     if "EinsteinSun" not in bpy.data.objects:
         bpy.ops.object.light_add(type="SUN", location=(0, 0, 20))
         sun = bpy.context.active_object
         sun.name = "EinsteinSun"
-        sun.data.energy = 3.0
+        sun.data.energy = 2.0
         sun.rotation_euler = (math.radians(60), 0, math.radians(45))
 
 

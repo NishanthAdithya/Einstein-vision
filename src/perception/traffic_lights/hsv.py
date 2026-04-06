@@ -118,10 +118,13 @@ def _dominant_colour(crop_hsv: np.ndarray) -> str | None:
 # Phase 2 — Arrow detection
 # ---------------------------------------------------------------------------
 
-# Circularity = 4π·area/perimeter² ; a perfect circle = 1.0.
-# Arrows are elongated/pointed so their circularity is well below this.
-_ARROW_CIRCULARITY_MAX = 0.70
-_ARROW_MIN_AREA_PX     = 50
+# Circularity = 4π·area/perimeter² ; a perfect circle ≈ 1.0.
+# Real arrows are 0.20–0.50; round bulbs are 0.65–0.95.
+_ARROW_CIRCULARITY_MAX = 0.55   # anything above → round bulb, no arrow
+_ARROW_MIN_AREA_PX     = 80     # ignore tiny blobs
+# Only attempt arrow classification on large-enough crops (pixels).
+# Far-away lights are too small for reliable shape analysis.
+_ARROW_MIN_CROP_DIM    = 30     # both width AND height must exceed this
 
 
 def classify_traffic_light_arrows(
@@ -130,16 +133,9 @@ def classify_traffic_light_arrows(
 ) -> List[Detection]:
     """Detect arrow direction for every traffic-light detection in-place.
 
-    Runs only on detections that already have a traffic_light_state set.
-    Sets det.traffic_light_arrow to 'left', 'right', 'straight', or None
-    (None means the lit region is a solid round bulb, not an arrow).
-
-    Args:
-        detections: All detections; non-traffic-light entries are skipped.
-        frame_bgr:  uint8 BGR frame.
-
-    Returns:
-        The same list with traffic_light_arrow updated.
+    Runs only on detections that already have a traffic_light_state set AND
+    whose bounding box is large enough for reliable shape analysis.
+    Sets det.traffic_light_arrow to 'left', 'right', 'straight', or None.
     """
     h_img, w_img = frame_bgr.shape[:2]
 
@@ -153,7 +149,10 @@ def classify_traffic_light_arrows(
         y1 = max(0, int(det.bbox.y1))
         x2 = min(w_img, int(det.bbox.x2))
         y2 = min(h_img, int(det.bbox.y2))
-        if (x2 - x1) * (y2 - y1) < _MIN_CROP_AREA_PX:
+        bw, bh = x2 - x1, y2 - y1
+
+        # Skip boxes that are too small — not enough pixels for shape analysis
+        if bw < _ARROW_MIN_CROP_DIM or bh < _ARROW_MIN_CROP_DIM:
             continue
 
         crop_bgr = frame_bgr[y1:y2, x1:x2]
@@ -176,27 +175,28 @@ def _build_colour_mask(crop_hsv: np.ndarray, colour: str) -> np.ndarray:
         return cv2.inRange(crop_hsv,
                            np.array([_YELLOW_H_LO, _YELLOW_S_MIN, _YELLOW_V_MIN]),
                            np.array([_YELLOW_H_HI, 255, 255]))
-    # green
     return cv2.inRange(crop_hsv,
                        np.array([_GREEN_H_LO, _GREEN_S_MIN, _GREEN_V_MIN]),
                        np.array([_GREEN_H_HI, 255, 255]))
 
 
 def _detect_arrow(crop_bgr: np.ndarray, colour: str) -> Optional[str]:
-    """Return arrow direction ('left'/'right'/'straight') or None.
+    """Return 'left', 'right', 'straight', or None (round bulb / uncertain).
 
     Strategy:
-    1. Extract the lit colour region as a binary mask.
-    2. Find the largest contour.
-    3. Compute circularity — below threshold → arrow shape.
-    4. Use the orientation of the minimum-area bounding rectangle to
-       decide direction: horizontal bounding → left/right (side of
-       centroid decides which); vertical bounding → straight.
+    1. Isolate the lit colour region via HSV masking.
+    2. Find the largest connected blob.
+    3. Circularity test: high circularity → round bulb → return None.
+    4. Use image moments (orientation angle via mu20/mu11/mu02) to determine
+       the principal axis of the shape.
+    5. Near-vertical principal axis → 'straight'; near-horizontal →
+       'left' or 'right' based on which side of the crop the tip points to
+       (tip = the extreme point farthest from the centroid along the axis).
     """
     crop_hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
     mask = _build_colour_mask(crop_hsv, colour)
 
-    # Morphological clean-up
+    # Morphological clean-up to remove noise
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
@@ -215,28 +215,43 @@ def _detect_arrow(crop_bgr: np.ndarray, colour: str) -> Optional[str]:
     if perimeter < 1e-3:
         return None
 
+    # ── circularity gate ────────────────────────────────────────────────────
     circularity = 4.0 * np.pi * area / (perimeter ** 2)
     if circularity > _ARROW_CIRCULARITY_MAX:
-        return None  # round bulb — no arrow
+        return None   # round bulb
 
-    # Arrow detected: determine direction from bounding rect orientation
-    rect = cv2.minAreaRect(cnt)   # (centre, (w, h), angle)
-    rw, rh = rect[1]
-    if rw == 0 or rh == 0:
+    # ── principal axis via central moments ──────────────────────────────────
+    M = cv2.moments(cnt)
+    if M["m00"] < 1e-3:
+        return None
+
+    cx = M["m10"] / M["m00"]
+    cy = M["m01"] / M["m00"]
+
+    # Covariance components
+    mu20 = M["mu20"] / M["m00"]
+    mu11 = M["mu11"] / M["m00"]
+    mu02 = M["mu02"] / M["m00"]
+
+    # Angle of principal (major) axis in radians, measured from +X axis
+    angle = 0.5 * np.arctan2(2.0 * mu11, mu20 - mu02)  # −π/2 … +π/2
+
+    abs_angle = abs(angle)   # 0 = horizontal, π/2 = vertical
+
+    # Near-vertical (straight arrow): principal axis mostly along Y
+    if abs_angle > np.radians(55):
         return "straight"
 
-    aspect = max(rw, rh) / min(rw, rh)
-    if aspect < 1.4:
-        # Almost square — treat as straight (e.g. U-turn symbol)
-        return "straight"
+    # Near-horizontal (left/right arrow): find which side the tip points to.
+    # The "tip" of the arrow is the contour point farthest from the centroid
+    # along the horizontal axis.
+    pts = cnt.reshape(-1, 2).astype(np.float32)
+    dx = pts[:, 0] - cx
+    # Point with maximum positive dx → rightward tip → "right" arrow
+    # Point with maximum negative dx → leftward tip → "left" arrow
+    max_right = dx.max()
+    max_left  = -dx.min()
 
-    # Wide rectangle → horizontal arrow (left or right)
-    if rw >= rh:
-        M = cv2.moments(cnt)
-        if M["m00"] > 0:
-            cx = M["m10"] / M["m00"]
-            return "right" if cx > crop_bgr.shape[1] / 2.0 else "left"
-        return "straight"
-
-    # Tall rectangle → vertical / straight arrow
-    return "straight"
+    if max_right > max_left:
+        return "right"
+    return "left"

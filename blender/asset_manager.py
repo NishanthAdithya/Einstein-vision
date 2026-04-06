@@ -56,7 +56,7 @@ _ROTATION_OFFSET_MAP: Dict[str, Tuple[float, float, float]] = {
     "car":              (0.0,         0.0, math.pi / 2),
     "sedan":            (0.0,         0.0, math.pi / 2),
     "hatchback":        (0.0,         0.0, math.pi / 2),
-    "suv":              (0.0,         0.0, math.pi / 2),
+    "suv":              (0.0,         0.0, 0.0),
     "pickup":           (0.0,         0.0, math.pi / 2),
     "truck":            (0.0,         0.0, math.pi / 2),
     "bus":              (0.0,         0.0, math.pi / 2),
@@ -64,8 +64,11 @@ _ROTATION_OFFSET_MAP: Dict[str, Tuple[float, float, float]] = {
     "bicycle":          (math.pi / 2, 0.0, math.pi / 2),
     # People: upright with 90° X to stand up, face toward ego
     "person":           (math.pi / 2, 0.0, math.pi),
-    # Traffic light: upright, faces toward ego (-Y = toward camera origin)
-    "traffic light":    (math.pi / 2, 0.0, math.pi),
+    # Traffic light: upright, faces toward ego.
+    # TrafficSignal.blend local axes: Y=tall, X=face-forward, Z=lateral.
+    # Target: local Y→world Z (up), local X→world -Y (toward camera).
+    # Solved: R = Rx(π/2) @ Ry(-π/2) gives that mapping.
+    "traffic light":    (math.pi / 2, -math.pi / 2, 0.0),
     # Signs: upright, face toward ego
     "stop sign":        (math.pi / 2, 0.0, math.pi),
     "speed limit sign": (math.pi / 2, 0.0, math.pi),
@@ -80,8 +83,8 @@ _SCALE_MAP: Dict[str, float] = {
     "car":              0.020,   # local 231m → ~4.5m
     "sedan":            0.020,
     "hatchback":        0.020,
-    "suv":              0.020,   # tune after inspecting SUV.blend bounding box
-    "pickup":           0.018,   # tune after inspecting PickupTruck.blend bounding box
+    "suv":              3.35,    # Jeep_3_: built-in scale 3.354, nose along local +Y (4.27 m long)
+    "pickup":           2.5,     # Cube placeholder: 2 m sides → ~5 m world
     "truck":            0.001,   # local 8937m → ~8.5m
     "bus":              0.001,   # uses Truck asset
     "motorcycle":       0.012,   # local 178m → ~2.2m
@@ -185,7 +188,11 @@ def clear_scene_objects(prefix: str = "") -> None:
         and obj.name not in _STATIC_OBJECTS  # preserve ground plane etc.
     ]
     for obj in to_remove:
+        mesh = obj.data if obj.type == "MESH" else None
         bpy.data.objects.remove(obj, do_unlink=True)
+        # Free the copied mesh data block immediately to prevent unbounded accumulation
+        if mesh is not None and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +216,7 @@ def _get_or_load_asset(
         warnings.warn(f"Asset not found: {blend_path}")
         return None
 
-    with bpy.data.libraries.load(str(blend_path), link=False) as (src, dst):
+    with bpy.data.libraries.load(str(blend_path.resolve()), link=False) as (src, dst):
         dst.objects = list(src.objects)
 
     # Find the first mesh object

@@ -9,7 +9,6 @@ import math
 from typing import Optional
 
 import bpy
-import mathutils
 
 
 # Emission strength values
@@ -18,15 +17,16 @@ _BRAKE_STRENGTH_OFF = 0.5
 _TURN_STRENGTH_ON   = 6.0
 _TURN_STRENGTH_OFF  = 0.3
 
-# Traffic light bulb layout — vertical offset from the detected object centre (metres)
-# Red is at the top, yellow in the middle, green at the bottom.
-_BULB_OFFSETS = {"red": 0.38, "yellow": 0.0, "green": -0.38}
 _BULB_COLOURS = {
     "red":    (1.0, 0.05, 0.05, 1.0),
     "yellow": (1.0, 0.80, 0.00, 1.0),
     "green":  (0.05, 1.0, 0.15, 1.0),
 }
-_BULB_RADIUS = 0.22   # metres
+
+# Vertical offset from the detected object centre (metres) per bulb colour.
+# Still used by set_traffic_light_arrow to position the arrow overlay.
+_BULB_OFFSETS = {"red": 0.38, "yellow": 0.0, "green": -0.38}
+_BULB_RADIUS  = 0.22   # metres — used to position arrow overlays
 
 
 def apply_brake_light(obj: bpy.types.Object, is_on: bool) -> None:
@@ -64,12 +64,15 @@ def set_traffic_light_colour(
     obj: bpy.types.Object,
     state: str,
 ) -> None:
-    """Set the active light bulb emission on a traffic signal asset.
+    """Set the active light colour on a traffic signal asset.
 
-    First tries to find material slots named 'red'/'yellow'/'green' in the
-    asset.  If the asset has no named bulb materials, creates three sphere
-    overlay objects (one per bulb) parented to the traffic light — only the
-    active state sphere glows.
+    Strategy 1: if the asset has named material slots ('red'/'yellow'/'green'),
+    set emission strength on each slot.
+
+    Strategy 2 (fallback for assets with no bulb materials, e.g. TrafficSignal.blend):
+    apply a pre-built emission material directly to the mesh, tinting the entire
+    housing with the detected state colour.  Three shared materials are created
+    once and reused across instances.
 
     Args:
         obj:   The Blender traffic light object.
@@ -99,31 +102,38 @@ def set_traffic_light_colour(
     if found_any:
         return
 
-    # ── strategy 2: overlay sphere children ─────────────────────────────────
-    _ensure_traffic_light_bulbs(obj)
-    for bulb_name in ("red", "yellow", "green"):
-        child = bpy.data.objects.get(f"{obj.name}_TL_{bulb_name}")
-        if child is None:
-            continue
-        mat_name = f"TL_Bulb_{bulb_name}"
-        if mat_name not in bpy.data.materials:
-            mat = bpy.data.materials.new(mat_name)
-            mat.use_nodes = True
-            nodes = mat.node_tree.nodes
-            links = mat.node_tree.links
-            nodes.clear()
-            emit = nodes.new("ShaderNodeEmission")
-            emit.inputs["Color"].default_value = _BULB_COLOURS[bulb_name]
-            emit.inputs["Strength"].default_value = 0.1
-            out = nodes.new("ShaderNodeOutputMaterial")
-            links.new(emit.outputs["Emission"], out.inputs["Surface"])
-        mat = bpy.data.materials[mat_name]
-        if not child.data.materials:
-            child.data.materials.append(mat)
-        if bulb_name == state:
-            _set_emission_strength(mat, 10.0)
+    # ── strategy 2: apply coloured emission material to the mesh ─────────────
+    # Three shared materials (one per state) are created once and reused.
+    # Each instance already has a COPY of the mesh data (from spawn_asset),
+    # so assigning a shared material here is safe.
+    mat_name = f"TL_State_{state}"
+    if mat_name not in bpy.data.materials:
+        colour = _BULB_COLOURS[state]
+        mat = bpy.data.materials.new(mat_name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        nodes.clear()
+
+        # Dark diffuse housing + strong emission tint
+        mix   = nodes.new("ShaderNodeMixShader")
+        diff  = nodes.new("ShaderNodeBsdfDiffuse")
+        diff.inputs["Color"].default_value = (0.05, 0.05, 0.05, 1.0)
+        emit  = nodes.new("ShaderNodeEmission")
+        emit.inputs["Color"].default_value    = colour
+        emit.inputs["Strength"].default_value = 6.0
+        mix.inputs["Fac"].default_value = 0.65   # 65% emission, 35% dark diffuse
+        out = nodes.new("ShaderNodeOutputMaterial")
+        links.new(diff.outputs["BSDF"],       mix.inputs[1])
+        links.new(emit.outputs["Emission"],   mix.inputs[2])
+        links.new(mix.outputs["Shader"],      out.inputs["Surface"])
+
+    mat = bpy.data.materials[mat_name]
+    if obj.data and hasattr(obj.data, "materials"):
+        if not obj.data.materials:
+            obj.data.materials.append(mat)
         else:
-            _set_emission_strength(mat, 0.05)
+            obj.data.materials[0] = mat
 
 
 def set_traffic_light_arrow(
@@ -188,35 +198,6 @@ def set_traffic_light_arrow(
         arrow_obj.data.materials.append(mat)
     else:
         arrow_obj.data.materials[0] = mat
-
-
-# ---------------------------------------------------------------------------
-# Traffic light bulb helpers
-# ---------------------------------------------------------------------------
-
-def _ensure_traffic_light_bulbs(obj: bpy.types.Object) -> None:
-    """Create three sphere children on a traffic light if they don't exist yet."""
-    for bulb_name in ("red", "yellow", "green"):
-        child_name = f"{obj.name}_TL_{bulb_name}"
-        if bpy.data.objects.get(child_name):
-            continue
-
-        bpy.ops.mesh.primitive_uv_sphere_add(
-            radius=_BULB_RADIUS,
-            segments=12,
-            ring_count=8,
-            location=(0, 0, 0),
-        )
-        sphere = bpy.context.active_object
-        sphere.name = child_name
-
-        # Parent to the traffic light without offset
-        sphere.parent = obj
-        sphere.matrix_parent_inverse = obj.matrix_world.inverted()
-
-        # Position: slightly in front of the housing face (-Y), at the correct height
-        z_off = _BULB_OFFSETS[bulb_name]
-        sphere.location = (0.0, -0.12, z_off)
 
 
 # ---------------------------------------------------------------------------
