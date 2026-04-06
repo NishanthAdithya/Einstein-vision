@@ -24,10 +24,11 @@ _BULB_COLOURS = {
 }
 
 # World-Z offset from obj.location.z (housing base) to each bulb centre.
-# Housing is ~3.9 m tall (scale 1.14 × local Y range 3.44 m).
-# Bulbs sit in the top half: red=top, yellow=mid, green=bottom.
-_BULB_OFFSETS = {"red": 3.1, "yellow": 2.5, "green": 1.9}
-_BULB_RADIUS  = 0.22   # metres — sphere radius
+# Housing is ~3.92 m tall (scale 1.14 × local Y range 3.44 m).
+# Bulbs are equally spaced: centres at 1/6, 3/6, 5/6 of housing height.
+# 3.92 / 6 = 0.65, 3.92 / 2 = 1.96, 5 * 3.92 / 6 = 3.27
+_BULB_OFFSETS = {"red": 3.27, "yellow": 1.96, "green": 0.65}
+_BULB_RADIUS  = 0.42   # metres — sized to fill the housing aperture
 
 
 def apply_brake_light(obj: bpy.types.Object, is_on: bool) -> None:
@@ -159,7 +160,7 @@ def _ensure_bulb_sphere(obj: bpy.types.Object, state: str) -> None:
     # Housing front face is at obj.y - 1.08 m (local X=0.95 × scale 1.14 → world -Y).
     # Place sphere 1.3 m in front to sit visibly outside the housing.
     bpy.ops.mesh.primitive_uv_sphere_add(
-        radius=0.18, segments=10, ring_count=6,
+        radius=_BULB_RADIUS, segments=12, ring_count=8,
         location=(x, y - 1.3, z + z_off),
     )
     sphere = bpy.context.active_object

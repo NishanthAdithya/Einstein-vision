@@ -25,10 +25,13 @@ _WORLD_NAME_MAP = {
     "traffic pole":     "traffic pole",
     "dustbin":          "dustbin",
     "trash can":        "dustbin",
+    "waste bin":        "dustbin",
+    "litter bin":       "dustbin",
     "garbage bin":      "dustbin",
     "barrel":           "barrel",
     "stop sign":        "stop sign",
     "speed limit sign": "speed limit sign",
+    "round road sign":  "speed limit sign",
     "road arrow":       "road arrow marking",
     "road arrow marking": "road arrow marking",
 }

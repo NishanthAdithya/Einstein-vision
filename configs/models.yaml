@@ -19,9 +19,13 @@ detection:
     - traffic cylinder
     - traffic pole
     - dustbin
+    - trash can
+    - waste bin
+    - litter bin
     - barrel
     - stop sign
     - speed limit sign
+    - round road sign
     - road arrow marking
 
 lanes:

@@ -27,7 +27,7 @@ _CLASS_3D_DIMS = {
     # People
     "person":           (0.5, 0.4, 1.75),
     # Traffic infrastructure
-    "traffic light":    (0.5, 0.4, 1.2),
+    "traffic light":    (0.5, 0.4, 3.9),
     "traffic cone":     (0.4, 0.4, 0.7),
     "traffic cylinder": (0.4, 0.4, 1.0),
     "traffic pole":     (0.15, 0.15, 3.0),
@@ -130,9 +130,14 @@ def draw_detections(
 
         _put_label(out, label, x1, y1, colour)
 
-        # Draw directional arrow graphic inside the bounding box
+        # Draw directional arrow inside the active-colour strip of the bbox
         if det.traffic_light_arrow:
-            _draw_arrow_on_box(out, x1, y1, x2, y2, det.traffic_light_arrow, colour)
+            _strip = {"red": 0, "yellow": 1, "green": 2}
+            strip_idx = _strip.get(det.traffic_light_state, 1)
+            bh = y2 - y1
+            strip_cy = y1 + int(bh * (strip_idx + 0.5) / 3)
+            _draw_arrow_on_box(out, x1, y1, x2, y2, det.traffic_light_arrow,
+                               colour, cy_override=strip_cy)
 
     return out
 
@@ -347,10 +352,11 @@ def _draw_arrow_on_box(
     x1: int, y1: int, x2: int, y2: int,
     arrow: str,
     colour: tuple,
+    cy_override: int | None = None,
 ) -> None:
     """Draw a bold directional arrow centred inside a bounding box."""
     cx = (x1 + x2) // 2
-    cy = (y1 + y2) // 2
+    cy = cy_override if cy_override is not None else (y1 + y2) // 2
     r  = max(8, min((x2 - x1), (y2 - y1)) // 3)   # arrow half-length
 
     _DIR = {
@@ -373,12 +379,13 @@ def _box_corners_ego(
 ) -> np.ndarray:
     """Return (8, 3) array of 3-D box corners in the ego frame."""
     l, w, h = dims
-    # Local corners: ±w/2 X, ±l/2 Y, 0..h Z (box sits on the ground)
+    # Box is centred on pos_3d (depth estimation gives the bbox-centre 3D point).
+    # Z corners span [-h/2, +h/2] so the box is centred at pos_3d height.
     local = np.array([
-        [ w/2,  l/2, 0.0], [-w/2,  l/2, 0.0],
-        [-w/2, -l/2, 0.0], [ w/2, -l/2, 0.0],
-        [ w/2,  l/2,   h], [-w/2,  l/2,   h],
-        [-w/2, -l/2,   h], [ w/2, -l/2,   h],
+        [ w/2,  l/2, -h/2], [-w/2,  l/2, -h/2],
+        [-w/2, -l/2, -h/2], [ w/2, -l/2, -h/2],
+        [ w/2,  l/2,  h/2], [-w/2,  l/2,  h/2],
+        [-w/2, -l/2,  h/2], [ w/2, -l/2,  h/2],
     ], dtype=np.float64)
     c, s = np.cos(yaw), np.sin(yaw)
     R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
