@@ -23,10 +23,11 @@ _BULB_COLOURS = {
     "green":  (0.05, 1.0, 0.15, 1.0),
 }
 
-# Vertical offset from the detected object centre (metres) per bulb colour.
-# Still used by set_traffic_light_arrow to position the arrow overlay.
-_BULB_OFFSETS = {"red": 0.38, "yellow": 0.0, "green": -0.38}
-_BULB_RADIUS  = 0.22   # metres — used to position arrow overlays
+# World-Z offset from obj.location.z (housing base) to each bulb centre.
+# Housing is ~3.9 m tall (scale 1.14 × local Y range 3.44 m).
+# Bulbs sit in the top half: red=top, yellow=mid, green=bottom.
+_BULB_OFFSETS = {"red": 3.1, "yellow": 2.5, "green": 1.9}
+_BULB_RADIUS  = 0.22   # metres — sphere radius
 
 
 def apply_brake_light(obj: bpy.types.Object, is_on: bool) -> None:
@@ -155,9 +156,11 @@ def _ensure_bulb_sphere(obj: bpy.types.Object, state: str) -> None:
     z_off  = _BULB_OFFSETS.get(state, 0.0)
     x, y, z = obj.location
 
+    # Housing front face is at obj.y - 1.08 m (local X=0.95 × scale 1.14 → world -Y).
+    # Place sphere 1.3 m in front to sit visibly outside the housing.
     bpy.ops.mesh.primitive_uv_sphere_add(
         radius=0.18, segments=10, ring_count=6,
-        location=(x, y - 0.6, z + z_off),   # 0.6 m in front of face (world -Y)
+        location=(x, y - 1.3, z + z_off),
     )
     sphere = bpy.context.active_object
     sphere.name = sphere_name
@@ -201,21 +204,22 @@ def set_traffic_light_arrow(
     if state not in _BULB_OFFSETS:
         state = "red"
 
+    # Place arrow plane in WORLD space, co-located with the bulb sphere.
+    # After the TL rotation (π/2, 0, -π/2), the face direction is world -Y,
+    # so we push the plane 1.35 m in world -Y (same as the bulb sphere) and
+    # at the correct world Z for the active bulb.
+    x, y, z = obj.location
+    z_off    = _BULB_OFFSETS[state]
+    world_loc = (x, y - 1.35, z + z_off)
+
     arrow_obj_name = f"{obj.name}_arrow"
-    arrow_obj = bpy.data.objects.get(arrow_obj_name)
+    # Previous-frame arrow is already removed by clear_scene_objects.
+    bpy.ops.mesh.primitive_plane_add(size=0.35, location=world_loc)
+    arrow_obj = bpy.context.active_object
+    arrow_obj.name = arrow_obj_name
+    # No parent — world-space placement avoids TL rotation confusion.
 
-    if arrow_obj is None:
-        # Create a thin rectangular plane representing the arrow
-        bpy.ops.mesh.primitive_plane_add(size=0.3, location=(0, 0, 0))
-        arrow_obj = bpy.context.active_object
-        arrow_obj.name = arrow_obj_name
-        arrow_obj.parent = obj
-        arrow_obj.matrix_parent_inverse = obj.matrix_world.inverted()
-
-    # Position the arrow at the active bulb's location (parent-relative)
-    z_offset = _BULB_OFFSETS[state]
-    arrow_obj.location = (0.0, -_BULB_RADIUS - 0.02, z_offset)
-    # Face toward camera (-Y in Blender, but object is already rotated)
+    # Rotate plane so its face (normal +Z by default) points toward camera (-Y).
     arrow_obj.rotation_euler = (math.pi / 2, 0.0, 0.0)
 
     # Assign an arrow emission material
