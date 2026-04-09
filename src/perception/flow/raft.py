@@ -8,6 +8,7 @@ from torchvision.models.optical_flow import Raft_Large_Weights, raft_large
 from src.perception.base import FlowEstimator
 
 
+
 # Map config weight names to torchvision weight enum values
 _WEIGHTS_MAP = {
     "raft-things": Raft_Large_Weights.C_T_SKHT_V2,
