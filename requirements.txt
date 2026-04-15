@@ -16,9 +16,6 @@ supervision>=0.27         # ByteTrack
 # After installing these, run: mim install mmengine mmcv mmdet mmpose
 openmim>=0.3
 
-# Phase 2 — vehicle sub-classification + speed limit reading
-openai-clip
-
 # Phase 3 — optical flow
 # RAFT weights are downloaded separately; no extra pip dependency needed
 

@@ -18,30 +18,6 @@ _COCO_KEEP = {
     "traffic light", "stop sign", "fire hydrant",
 }
 
-# Normalise YOLO-World free-text class names → canonical asset_manager keys.
-_WORLD_NAME_MAP = {
-    "traffic cone":     "traffic cone",
-    "traffic cylinder": "traffic cylinder",
-    "traffic pole":     "traffic pole",
-    "dustbin":          "dustbin",
-    "trash can":        "dustbin",
-    "waste bin":        "dustbin",
-    "litter bin":       "dustbin",
-    "garbage bin":      "dustbin",
-    "barrel":           "barrel",
-    "stop sign":        "stop sign",
-    "speed limit sign": "speed limit sign",
-    "circular speed limit sign": "speed limit sign",
-    "road sign with number":     "speed limit sign",
-    "road arrow":       "road arrow marking",
-    "road arrow marking": "road arrow marking",
-    # Phase 3 / extra credit — speed bumps
-    "speed bump":       "speed bump",
-    "speed hump":       "speed bump",
-    "raised crosswalk": "speed bump",
-    "road bump":        "speed bump",
-}
-
 
 class YoloCombinedDetector(ObjectDetector):
     """Object detector that fuses YOLO11 (COCO) and YOLO-World (open-vocab).
@@ -139,7 +115,6 @@ class YoloCombinedDetector(ObjectDetector):
             boxes = r.boxes
             for i in range(len(boxes)):
                 name = r.names[int(boxes.cls[i])]
-                name = _WORLD_NAME_MAP.get(name.lower(), name)
                 x1, y1, x2, y2 = boxes.xyxy[i].tolist()
                 detections.append(
                     Detection(

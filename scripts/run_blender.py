@@ -126,8 +126,6 @@ def _run_blender(blender_bin: str, scene_id: str, args: argparse.Namespace) -> b
     ]
     if args.force:
         cmd.append("--force")
-    if args.max_frames > 0:
-        cmd += ["--max-frames", str(args.max_frames)]
 
     log.debug("CMD: %s", " ".join(cmd))
 
@@ -194,11 +192,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--cameras-config",  default="configs/cameras.yaml")
     p.add_argument("--pipeline-config", default="configs/pipeline.yaml")
     p.add_argument("--phase",           type=int, default=1)
-    p.add_argument("--engine",          default="BLENDER_EEVEE",
+    p.add_argument("--engine",          default="CYCLES",
                    choices=["CYCLES", "BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"])
-    p.add_argument("--samples",         type=int, default=8)
-    p.add_argument("--max-frames",      type=int, default=400,
-                   help="Only render first N frames (0 = all, default 400)")
+    p.add_argument("--samples",         type=int, default=64)
     p.add_argument("--force",           action="store_true",
                    help="Re-render frames that already have output PNGs")
     p.add_argument("--continue-on-error", action="store_true",

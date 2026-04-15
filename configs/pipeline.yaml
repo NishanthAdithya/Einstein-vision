@@ -1,8 +1,8 @@
 # Pipeline execution settings.
 
-sample_every_n: 1         # process every frame (36fps — first 400 frames per scene)
+sample_every_n: 5         # process 1 in every N frames (36fps / 5 = 7.2fps effective)
 camera: front             # front | back | left | right
-phase: 2                  # 1 | 2 | 3  (gates which modules are active)
+phase: 1                  # 1 | 2 | 3  (gates which modules are active)
 
 paths:
   data_root: P3Data

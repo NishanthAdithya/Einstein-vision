@@ -150,32 +150,6 @@ class Camera:
         )
         return R_pitch @ M_swap
 
-    def ego_to_image(self, xyz_ego: np.ndarray) -> np.ndarray:
-        """Project ego-frame 3D points to image pixel coordinates (u, v).
-
-        Args:
-            xyz_ego: (N, 3) or (3,) float array in ego frame.
-
-        Returns:
-            (N, 2) float32 array of (u, v) pixel coordinates.
-            Rows where the point is behind the camera are set to NaN.
-        """
-        R_inv = self._camera_to_ego_rotation().T   # ego → camera rotation
-
-        pts = np.atleast_2d(xyz_ego).astype(np.float64)
-        shifted = pts.copy()
-        shifted[:, 2] -= self._cfg.height_above_ground_m   # undo height offset
-        cam = (R_inv @ shifted.T).T                         # (N, 3) camera frame
-
-        uv = np.full((len(cam), 2), np.nan, dtype=np.float32)
-        valid = cam[:, 2] > 0.1   # in front of camera
-        if valid.any():
-            u = self._cfg.fx * cam[valid, 0] / cam[valid, 2] + self._cfg.cx
-            v = self._cfg.fy * cam[valid, 1] / cam[valid, 2] + self._cfg.cy
-            uv[valid] = np.stack([u, v], axis=1).astype(np.float32)
-
-        return uv.squeeze() if np.asarray(xyz_ego).ndim == 1 else uv
-
     # ------------------------------------------------------------------
     # IPM homography for the ground plane
     # ------------------------------------------------------------------

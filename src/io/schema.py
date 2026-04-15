@@ -62,11 +62,6 @@ class Detection:
     depth: float = 0.0
     yaw: float = 0.0
 
-    # Filled by phase 2 modules
-    vehicle_subclass: Optional[str] = None     # 'sedan' | 'suv' | 'hatchback' | 'pickup'
-    traffic_light_arrow: Optional[str] = None  # 'left' | 'right' | 'straight'
-    speed_limit: Optional[int] = None          # e.g. 25, 35, 45, 55, 65
-
     # Filled by phase 3 modules
     is_moving: Optional[bool] = None
     brake_light_on: Optional[bool] = None
@@ -75,7 +70,6 @@ class Detection:
     velocity_3d: Tuple[float, float, float] = field(
         default_factory=lambda: (0.0, 0.0, 0.0)
     )
-    collision_risk: Optional[bool] = None      # True if collision predicted (extra credit)
 
 
 @dataclass
@@ -91,8 +85,6 @@ class PoseResult:
     bbox: BBox
     keypoints: np.ndarray                      # (133, 3): x, y, confidence — RTMW whole-body
     keypoints_3d: Optional[np.ndarray] = None  # (133, 3) in camera frame, metres
-    pos_3d: Optional[Tuple[float, float, float]] = None  # 3D root position in ego frame
-    depth: float = 0.0                         # depth of person in metres
 
 
 @dataclass

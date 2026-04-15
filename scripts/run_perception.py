@@ -33,14 +33,8 @@ from src.localization.ground_plane import classify_lane_types
 from src.localization.projector import lift_detections, lift_lane_points
 from src.localization.yaw_estimator import estimate_yaws
 from src.perception.factory import build_from_config
-from src.perception.traffic_lights.hsv import (
-    classify_traffic_lights,
-    classify_traffic_light_arrows,
-)
-from src.utils.debug_viz import draw_frame_data, draw_flow_arrows
-from src.phase3.brake_turn_detector import BrakeTurnDetector
-from src.phase3.motion_classifier import classify_motion
-from src.phase3.collision_predictor import CollisionPredictor
+from src.perception.traffic_lights.hsv import classify_traffic_lights
+from src.utils.debug_viz import draw_frame_data
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,8 +59,6 @@ def main() -> None:
     seq_dir = Path(pipeline_cfg["paths"]["sequences_dir"])
     output_root = Path(args.output_root or pipeline_cfg["paths"]["output_root"])
 
-    max_frames = args.max_frames
-
     scene_dir = seq_dir / args.scene
     if not scene_dir.exists():
         raise FileNotFoundError(f"Scene directory not found: {scene_dir}")
@@ -81,16 +73,11 @@ def main() -> None:
     tracker        = build_from_config(models_cfg_path, "tracker")
 
     pose_model: Any = None
-    subclassifier: Any = None
     flow_model: Any = None
-    brake_turn_detector: Any = None
-    collision_predictor: Any = None
     if phase >= 2:
         pose_model = build_from_config(models_cfg_path, "pose")
-        subclassifier = _build_subclassifier(models_cfg_path)
     if phase >= 3:
         flow_model = build_from_config(models_cfg_path, "flow")
-        brake_turn_detector, collision_predictor = _build_phase3(models_cfg_path)
 
     # ── camera geometry ───────────────────────────────────────────────────────
     cam_config = load_camera(camera_name, args.cameras_config)
@@ -110,9 +97,6 @@ def main() -> None:
                  reader.total_frames, len(reader), sample_every_n)
 
         for frame_idx, frame_bgr in reader:
-            if max_frames > 0 and frame_idx >= max_frames:
-                break
-
             paths = get_output_paths(output_root, args.scene, frame_idx)
 
             # Skip already-processed frames unless --force
@@ -137,14 +121,6 @@ def main() -> None:
             # 4. Traffic light colour classification
             classify_traffic_lights(detections, frame_bgr)
 
-            # 4b. Traffic light arrow detection (Phase 2+)
-            if phase >= 2:
-                classify_traffic_light_arrows(detections, frame_bgr)
-
-            # 4c. Vehicle sub-classification and speed limit OCR (Phase 2+)
-            if subclassifier is not None:
-                subclassifier.classify_detections(detections, frame_bgr)
-
             # 5. 3-D lifting: fills pos_3d + depth
             lift_detections(detections, depth_map, camera)
 
@@ -168,22 +144,9 @@ def main() -> None:
                 poses = pose_model.predict(frame_bgr, detections)
 
             # 11. Optical flow (Phase 3+)
-            flow: Optional[np.ndarray] = None
             if flow_model is not None and prev_frame is not None:
                 flow = flow_model.predict(prev_frame, frame_bgr)
                 save_flow_safe(paths["flow"], flow)
-
-            # 12. Motion classification: parked vs moving, Sampson distance (Phase 3+)
-            if phase >= 3 and flow is not None:
-                classify_motion(detections, flow, camera)
-
-            # 13. Brake light + turn signal detection (Phase 3+)
-            if phase >= 3 and brake_turn_detector is not None:
-                brake_turn_detector.update(detections, frame_bgr)
-
-            # 14. Collision prediction — pedestrian / vehicle (Phase 3+, extra credit)
-            if phase >= 3 and collision_predictor is not None:
-                collision_predictor.update(detections)
 
             # ── assemble + save ───────────────────────────────────────────────
             frame_data = FrameData(
@@ -202,8 +165,6 @@ def main() -> None:
             # ── optional debug overlay ────────────────────────────────────────
             if args.debug:
                 debug_frame = draw_frame_data(frame_bgr, frame_data)
-                if flow is not None:
-                    debug_frame = draw_flow_arrows(debug_frame, detections, flow)
                 render_path = paths["render"].with_suffix(".debug.jpg")
                 render_path.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(render_path), debug_frame)
@@ -222,9 +183,7 @@ def main() -> None:
              n_processed, elapsed, n_processed / elapsed)
 
     # ── cleanup ───────────────────────────────────────────────────────────────
-    for model in (depth_model, detector, lane_detector, tracker,
-                  pose_model, subclassifier, flow_model,
-                  brake_turn_detector, collision_predictor):
+    for model in (depth_model, detector, lane_detector, tracker, pose_model, flow_model):
         if model is not None:
             model.close()
 
@@ -232,49 +191,6 @@ def main() -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _build_phase3(config_path: str) -> tuple:
-    """Instantiate Phase 3 detectors from models.yaml.
-
-    Returns:
-        (BrakeTurnDetector, CollisionPredictor) — both ready to use.
-    """
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-    p3 = cfg.get("phase3", {})
-
-    from src.phase3.brake_turn_detector import BrakeTurnDetector
-    from src.phase3.collision_predictor import CollisionPredictor
-
-    btd = BrakeTurnDetector(
-        history_len  = p3.get("brake_history_len", 8),
-        brake_thresh = p3.get("brake_thresh", 0.05),
-        turn_thresh  = p3.get("turn_thresh",  0.04),
-    )
-    cp = CollisionPredictor(
-        predict_frames = p3.get("predict_frames",  15),
-        warning_dist   = p3.get("warning_dist_m",  5.0),
-    )
-    return btd, cp
-
-
-def _build_subclassifier(config_path: str) -> Any:
-    """Load the VehicleSubclassifier from models.yaml config.
-
-    Returns None gracefully if the openai-clip package is not installed.
-    """
-    try:
-        with open(config_path) as f:
-            cfg = yaml.safe_load(f)
-        sub_cfg = cfg.get("vehicle_subclassifier", {})
-        device = sub_cfg.get("device", "cuda")
-        from src.perception.detection.vehicle_subclassifier import VehicleSubclassifier
-        return VehicleSubclassifier(device=device)
-    except ImportError:
-        log.warning("openai-clip not installed — vehicle sub-classification disabled. "
-                    "Install with: pip install openai-clip")
-        return None
-
 
 def _get_lane_mask(lane_detector: Any):
     """Return the raw binary lane mask if the detector exposes it."""
@@ -311,8 +227,6 @@ def _parse_args() -> argparse.Namespace:
                    help="Re-process frames even if output already exists")
     p.add_argument("--debug",          action="store_true",
                    help="Save debug overlay JPEGs alongside each frame")
-    p.add_argument("--max-frames",     type=int, default=400,
-                   help="Stop after processing this many frames (0 = all, default 400)")
     return p.parse_args()
 
 

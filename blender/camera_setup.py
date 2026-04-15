@@ -26,7 +26,7 @@ def setup_camera(cam_data: Dict[str, Any], image_width: int, image_height: int) 
     scene = bpy.context.scene
     scene.render.resolution_x = image_width
     scene.render.resolution_y = image_height
-    scene.render.resolution_percentage = 50
+    scene.render.resolution_percentage = 100
 
     # Remove existing camera if present
     if "EinsteinCamera" in bpy.data.objects:

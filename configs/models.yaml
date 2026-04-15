@@ -16,42 +16,29 @@ detection:
   iou_threshold: 0.45
   open_vocab_classes:
     - traffic cone
-    - traffic cylinder
-    - traffic pole
     - dustbin
-    - trash can
-    - waste bin
-    - litter bin
     - barrel
+    - traffic pole
     - stop sign
-    - speed limit sign
-    - circular speed limit sign
-    - road sign with number
-    - road arrow marking
-    # Phase 3 / extra credit
-    - speed bump
-    - speed hump
-    - raised crosswalk
-    - road bump
 
 lanes:
-  model: maskrcnn                   # maskrcnn | yolopv2
-  weights_path: models/maskrcnn_lane.pth
-  device: cuda
-  conf_threshold: 0.50
+  model: yolopv2                    # yolopv2
+  weights_path: weights/yolopv2.pt
+  min_lane_pixels: 200
   poly_degree: 2
-  bezier_points: 10
+  bezier_sample_points: 10
 
 tracker:
-  model: deepsort                   # deepsort | bytetrack
-  max_age: 30
-  n_init: 3
-  max_cosine_dist: 0.4
-  embedder: mobilenet
+  model: bytetrack                  # bytetrack
+  frame_rate: 7.2                   # 36 fps / sample_every_n=5
+  lost_track_buffer: 30
+  track_activation_threshold: 0.25
+  minimum_matching_threshold: 0.80
+  ema_alpha: 0.40
 
 pose:
-  model: yolo_pose                  # yolo_pose | rtmw
-  weights: yolo11x-pose.pt          # auto-downloaded on first run
+  model: rtmw                       # rtmw
+  checkpoint: rtmw-l_8xb64-270e_coco-wholebody-256x192-59b54016_20231219.pth
   device: cuda
 
 flow:
@@ -59,20 +46,3 @@ flow:
   weights: raft-things
   iters: 20
   device: cuda
-
-vehicle_subclassifier:
-  device: cuda                      # cuda | cpu
-
-phase3:
-  # Brake light / turn signal detector
-  brake_history_len: 8
-  brake_thresh: 0.05
-  turn_thresh:  0.04
-
-  # Motion classifier (optical flow + Sampson distance)
-  flow_residual_thresh: 2.0         # pixels/frame residual to flag as moving
-  sampson_thresh:       4.0         # Sampson distance to flag as moving
-
-  # Collision predictor (extra credit)
-  predict_frames:  15               # frames ahead to project (~2 s at 7.2 fps)
-  warning_dist_m:  5.0              # metres — pedestrian/vehicle warning radius

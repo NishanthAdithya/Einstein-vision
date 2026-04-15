@@ -21,7 +21,6 @@ src/perception/factory.py
 src/perception/depth/__init__.py
 src/perception/depth/depth_anything.py
 src/perception/detection/__init__.py
-src/perception/detection/vehicle_subclassifier.py
 src/perception/detection/yolo_combined.py
 src/perception/flow/__init__.py
 src/perception/flow/raft.py
@@ -29,11 +28,8 @@ src/perception/lanes/__init__.py
 src/perception/lanes/yolopv2.py
 src/perception/pose/__init__.py
 src/perception/pose/rtmw.py
-src/perception/pose/yolo_pose.py
 src/perception/tracking/__init__.py
 src/perception/tracking/bytetrack.py
-src/perception/traffic_lights/__init__.py
-src/perception/traffic_lights/hsv.py
 src/phase3/__init__.py
 src/utils/__init__.py
 src/utils/debug_viz.py
