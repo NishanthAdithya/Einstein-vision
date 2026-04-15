@@ -8,6 +8,7 @@
 # The Undist/ videos are already undistorted, so dist_coeffs only matter
 # if processing Raw/ videos directly. All 4 cameras share the same resolution.
 
+
 front:
   fx: 1594.7
   fy: 1607.7
