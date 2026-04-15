@@ -75,6 +75,7 @@ class Detection:
     velocity_3d: Tuple[float, float, float] = field(
         default_factory=lambda: (0.0, 0.0, 0.0)
     )
+    collision_risk: Optional[bool] = None      # True if collision predicted (extra credit)
 
 
 @dataclass

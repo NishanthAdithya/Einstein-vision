@@ -36,6 +36,7 @@ _CLASS_3D_DIMS = {
     "stop sign":        (0.6, 0.1, 2.5),
     "speed limit sign": (0.5, 0.1, 2.5),
     "fire hydrant":     (0.4, 0.4, 0.6),
+    "speed bump":       (3.5, 0.6, 0.12),
 }
 
 # Bottom face: 0-3, top face: 4-7 (corners in local box frame)
@@ -107,7 +108,9 @@ def draw_detections(
             continue
 
         colour = _class_colour(det.class_name)
-        if det.traffic_light_state == "red":
+        if det.collision_risk:
+            colour = (0, 0, 255)   # bright red for collision risk
+        elif det.traffic_light_state == "red":
             colour = (0, 0, 220)
         elif det.traffic_light_state == "yellow":
             colour = (0, 200, 220)
@@ -126,6 +129,17 @@ def draw_detections(
             label_parts.append(det.traffic_light_state.upper())
         if det.traffic_light_arrow:
             label_parts.append(det.traffic_light_arrow.upper())
+        if det.speed_limit is not None:
+            label_parts.append(f"{det.speed_limit}mph")
+        # Phase 3 annotations
+        if det.brake_light_on:
+            label_parts.append("BRAKE")
+        if det.turn_signal and det.turn_signal != "none":
+            label_parts.append(f"TURN-{det.turn_signal.upper()}")
+        if det.is_moving is not None:
+            label_parts.append("MOV" if det.is_moving else "PARK")
+        if det.collision_risk:
+            label_parts.append("COLLISION!")
         label = "  ".join(label_parts)
 
         _put_label(out, label, x1, y1, colour)

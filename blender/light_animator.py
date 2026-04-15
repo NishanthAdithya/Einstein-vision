@@ -251,6 +251,42 @@ def set_traffic_light_arrow(
 
 
 # ---------------------------------------------------------------------------
+# Collision-risk highlight (extra credit)
+# ---------------------------------------------------------------------------
+
+_COLLISION_STRENGTH_ON = 10.0
+
+
+def apply_collision_highlight(obj: bpy.types.Object) -> None:
+    """Overlay a bright red emissive material on a collision-risk object.
+
+    Creates (or reuses) a shared 'CollisionRisk' material and appends it to
+    the object's material slots so the red glow blends with the base material.
+
+    Args:
+        obj: The Blender vehicle or pedestrian object.
+    """
+    mat_name = "CollisionRisk"
+    if mat_name not in bpy.data.materials:
+        mat = bpy.data.materials.new(mat_name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        nodes.clear()
+        emit = nodes.new("ShaderNodeEmission")
+        emit.inputs["Color"].default_value    = (1.0, 0.02, 0.02, 1.0)  # bright red
+        emit.inputs["Strength"].default_value = _COLLISION_STRENGTH_ON
+        out = nodes.new("ShaderNodeOutputMaterial")
+        links.new(emit.outputs["Emission"], out.inputs["Surface"])
+
+    mat = bpy.data.materials[mat_name]
+    if obj.data and hasattr(obj.data, "materials"):
+        # Append so the red glow mixes with the base vehicle colour
+        if mat_name not in [m.name for m in obj.data.materials if m]:
+            obj.data.materials.append(mat)
+
+
+# ---------------------------------------------------------------------------
 # General helpers
 # ---------------------------------------------------------------------------
 

@@ -141,10 +141,25 @@ def _render_frame(
     lane_renderer.clear_lanes(frame_idx)
     pose_renderer.clear_poses()
 
+    # ── build set of person bbox centres that have matching pose data ────────
+    _posed_person_centres: set = set()
+    if phase >= 2 and frame_data.poses:
+        for pose in frame_data.poses:
+            px = (pose.bbox.x1 + pose.bbox.x2) / 2
+            py = (pose.bbox.y1 + pose.bbox.y2) / 2
+            _posed_person_centres.add((round(px, 1), round(py, 1)))
+
     # ── spawn detection assets ────────────────────────────────────────────────
     for det in frame_data.detections:
         if det.pos_3d is None:
             continue
+
+        # Skip person mesh when pose_renderer will draw the skeleton instead
+        if det.class_name == "person" and phase >= 2:
+            dpx = round((det.bbox.x1 + det.bbox.x2) / 2, 1)
+            dpy = round((det.bbox.y1 + det.bbox.y2) / 2, 1)
+            if (dpx, dpy) in _posed_person_centres:
+                continue
 
         from src.utils.geometry import ego_to_blender
 
@@ -179,6 +194,12 @@ def _render_frame(
                 light_animator.apply_turn_signal(
                     obj, det.turn_signal, frame=frame_idx, fps=36.0
                 )
+            # Motion direction arrow for moving vehicles
+            if det.is_moving:
+                _spawn_motion_arrow(obj, det.velocity_3d, yaw_b)
+            # Collision risk highlight (extra credit)
+            if det.collision_risk:
+                light_animator.apply_collision_highlight(obj)
 
         # Traffic light colour + arrow + pole (Phase 2+)
         if det.class_name == "traffic light":
@@ -189,6 +210,17 @@ def _render_frame(
                     obj, det.traffic_light_arrow, state
                 )
             _spawn_tl_pole(obj)
+
+    # ── speed bumps (Phase 3, extra credit) ──────────────────────────────────
+    if phase >= 3:
+        _SPEED_BUMP_CLASSES = frozenset({
+            "speed bump", "speed hump", "raised crosswalk", "road bump",
+        })
+        for det in frame_data.detections:
+            if det.class_name.lower() in _SPEED_BUMP_CLASSES and det.pos_3d is not None:
+                from src.utils.geometry import ego_to_blender as _e2b
+                xyz_b, _ = _e2b(det.pos_3d, 0.0)
+                _spawn_speed_bump(tuple(xyz_b))
 
     # ── pedestrian poses (Phase 2+) ───────────────────────────────────────────
     if phase >= 2 and frame_data.poses:
@@ -224,6 +256,116 @@ def _render_frame(
 # ---------------------------------------------------------------------------
 # Scene helpers
 # ---------------------------------------------------------------------------
+
+def _spawn_motion_arrow(
+    obj: bpy.types.Object,
+    velocity_3d: tuple,
+    yaw: float,
+) -> None:
+    """Place a directional cone arrow near a moving vehicle.
+
+    The arrow points in the vehicle's direction of travel (estimated from
+    optical-flow velocity and yaw).  It is placed at ground level slightly
+    in front of the vehicle so it is clearly visible.
+
+    Args:
+        obj:         The Blender vehicle object (used for position).
+        velocity_3d: (vx, vy, vz) ego-frame velocity in m/frame.
+        yaw:         Vehicle yaw in radians (Blender convention).
+    """
+    import math as _math
+
+    x, y, z = obj.location
+
+    # Use yaw-based forward direction (more stable than noisy pixel flow)
+    vx, vy, _ = velocity_3d
+    speed_hint = _math.sqrt(vx ** 2 + vy ** 2)
+
+    # Arrow direction: primarily along yaw (forward), with lateral component
+    # from horizontal flow residual when significant.
+    fwd_x = _math.cos(yaw)   # Blender yaw: CCW from +Y
+    fwd_y = _math.sin(yaw)
+
+    # Slightly ahead of vehicle to avoid z-fighting with the mesh
+    offset = 2.5
+    tip_x = x + fwd_x * offset
+    tip_y = y + fwd_y * offset
+
+    # Cone pointing in yaw direction, lying on the ground
+    bpy.ops.mesh.primitive_cone_add(
+        radius1=0.4,
+        radius2=0.0,
+        depth=1.2,
+        location=(tip_x, tip_y, 0.6),
+        rotation=(math.pi / 2, 0.0, -yaw + math.pi / 2),
+    )
+    arrow = bpy.context.active_object
+    arrow.name = f"{obj.name}_motion_arrow"
+
+    # Bright cyan emissive material — distinct from brake/turn colours
+    mat_name = "MotionArrow"
+    if mat_name not in bpy.data.materials:
+        mat = bpy.data.materials.new(mat_name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        nodes.clear()
+        emit = nodes.new("ShaderNodeEmission")
+        emit.inputs["Color"].default_value    = (0.0, 0.9, 1.0, 1.0)   # cyan
+        emit.inputs["Strength"].default_value = 6.0
+        out = nodes.new("ShaderNodeOutputMaterial")
+        links.new(emit.outputs["Emission"], out.inputs["Surface"])
+    mat = bpy.data.materials[mat_name]
+    if not arrow.data.materials:
+        arrow.data.materials.append(mat)
+    else:
+        arrow.data.materials[0] = mat
+
+
+def _spawn_speed_bump(pos_ego: tuple) -> None:
+    """Place a yellow-striped speed bump rectangle on the ground plane.
+
+    The speed bump is a flat rectangular prism (3.5 m wide × 0.6 m deep ×
+    0.12 m tall) centred at ``pos_ego`` with a yellow/white alternating
+    stripe emission material for high visibility.
+
+    Args:
+        pos_ego: (X, Y, Z) ego-frame / Blender-frame position in metres.
+    """
+    x, y, _ = pos_ego   # force Z = 0 (ground)
+
+    bpy.ops.mesh.primitive_cube_add(
+        size=1.0,
+        location=(x, y, 0.06),
+    )
+    bump = bpy.context.active_object
+    bump.name = f"SpeedBump_{x:.1f}_{y:.1f}"
+    bump.scale = (3.5, 0.6, 0.12)
+    bpy.ops.object.transform_apply(scale=True)
+
+    mat_name = "SpeedBumpMat"
+    if mat_name not in bpy.data.materials:
+        mat = bpy.data.materials.new(mat_name)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        nodes.clear()
+
+        # Alternating yellow/white emission using a Checker Texture node
+        checker = nodes.new("ShaderNodeTexChecker")
+        checker.inputs["Scale"].default_value = 6.0
+        checker.inputs["Color1"].default_value = (1.0, 0.85, 0.0, 1.0)  # yellow
+        checker.inputs["Color2"].default_value = (1.0, 1.0,  1.0, 1.0)  # white
+
+        emit = nodes.new("ShaderNodeEmission")
+        emit.inputs["Strength"].default_value = 3.0
+        links.new(checker.outputs["Color"], emit.inputs["Color"])
+
+        out = nodes.new("ShaderNodeOutputMaterial")
+        links.new(emit.outputs["Emission"], out.inputs["Surface"])
+
+    bump.data.materials.append(bpy.data.materials[mat_name])
+
 
 def _spawn_tl_pole(tl_obj: bpy.types.Object) -> None:
     """Add a slim pole cylinder from the ground up to the traffic light base.
@@ -346,8 +488,8 @@ def _parse_args() -> argparse.Namespace:
                    choices=["CYCLES", "BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"])
     p.add_argument("--samples",         type=int, default=8)
     p.add_argument("--force",           action="store_true")
-    p.add_argument("--max-frames",      type=int, default=0,
-                   help="Only render first N frames (0 = all)")
+    p.add_argument("--max-frames",      type=int, default=400,
+                   help="Only render first N frames (0 = all, default 400)")
     return p.parse_args(argv)
 
 

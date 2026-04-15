@@ -102,8 +102,28 @@ _SCALE_MAP: Dict[str, float] = {
     "fire hydrant":     0.6,
 }
 
-# Cache of already-loaded library objects: blend_path → object name in scene
-_loaded_cache: Dict[str, str] = {}
+# Cache of already-loaded library objects: blend_path → list of mesh object names
+_loaded_cache: Dict[str, List[str]] = {}
+
+# For assets with multiple mesh parts (e.g. Dustbin has wheels + lid + body),
+# load ALL mesh parts so the full asset assembles at the spawn location.
+# For assets where only one specific mesh is useful, name it here.
+# None = load all meshes; a string = load only that named mesh.
+_ASSET_MESH_NAME: Dict[str, Optional[str]] = {
+    "dustbin":          None,          # all 3 parts (wheels, lid, body)
+    "traffic pole":     "Cylinder",    # Cylinder from TrafficAssets.blend
+    "traffic cone":     "absperrhut",  # German for traffic cone
+    "traffic cylinder": "absperrhut",  # same asset, cone shape
+}
+
+# Classes whose Z position should be clamped to ground (Z=0) when spawning,
+# since their asset origin is at the base and pos_3d gives the bbox centre height.
+_GROUND_CLAMP_CLASSES = frozenset({
+    "car", "sedan", "hatchback", "suv", "pickup", "truck", "bus",
+    "motorcycle", "bicycle", "person",
+    "dustbin", "traffic cone", "traffic cylinder", "barrel", "fire hydrant",
+    "traffic pole",
+})
 
 # Object names that persist across frames and must not be deleted by
 # clear_scene_objects (e.g. ground plane created once in main()).
@@ -146,43 +166,51 @@ def spawn_asset(
         return None
 
     blend_path = Path(assets_root) / blend_rel
-    obj = _get_or_load_asset(blend_path, class_name, Path(assets_root))
-    if obj is None:
+    template_names = _get_or_load_asset(blend_path, class_name, Path(assets_root))
+    if not template_names:
         return None
 
-    # Duplicate the template object for this instance
-    instance = obj.copy()
-    instance.data = obj.data.copy() if obj.data else None
-    bpy.context.scene.collection.objects.link(instance)
-
-    # Unhide — template has hide_render=True; instances must be visible
-    instance.hide_render = False
-    instance.hide_viewport = False
-
-    # Name for easy identification and animation lookup
-    suffix = f"_{track_id}" if track_id is not None else f"_{id(instance)}"
-    instance.name = f"{class_name}{suffix}"
-
-    # Place at ego position
-    x, y, z = pos_ego
-    instance.location = (x, y, z)
-
-    # Restore the asset's canonical orientation then add predicted yaw on Z.
+    suffix = f"_{track_id}" if track_id is not None else f"_{id(object())}"
     base_rx, base_ry, base_rz = _ROTATION_OFFSET_MAP.get(class_name, (0.0, 0.0, 0.0))
-    instance.rotation_euler = (base_rx, base_ry, base_rz + yaw_rad)
-
     scale = _SCALE_MAP.get(class_name, 1.0)
-    instance.scale = (scale, scale, scale)
+
+    # Ground-based objects always sit at Z=0 regardless of pos_3d.z
+    x, y, z = pos_ego
+    if class_name in _GROUND_CLAMP_CLASSES:
+        z = 0.0
+
+    first_instance = None
+    for i, tpl_name in enumerate(template_names):
+        tpl = bpy.data.objects.get(tpl_name)
+        if tpl is None:
+            continue
+
+        instance = tpl.copy()
+        instance.data = tpl.data.copy() if tpl.data else None
+        bpy.context.scene.collection.objects.link(instance)
+
+        instance.hide_render = False
+        instance.hide_viewport = False
+        instance.name = f"{class_name}{suffix}" if i == 0 else f"{class_name}{suffix}_p{i}"
+        instance.location = (x, y, z)
+        instance.rotation_euler = (base_rx, base_ry, base_rz + yaw_rad)
+        instance.scale = (scale, scale, scale)
+
+        if first_instance is None:
+            first_instance = instance
+
+    if first_instance is None:
+        return None
 
     # Phase 2 — apply speed limit number texture on the sign instance
     if class_name == "speed limit sign" and speed_limit is not None:
-        _apply_speed_limit_texture(instance, speed_limit)
+        _apply_speed_limit_texture(first_instance, speed_limit)
 
     # Apply per-track colour to vehicles so each tracked object is distinguishable
     if class_name in _VEHICLE_CLASSES and track_id is not None:
-        _apply_track_colour(instance, track_id)
+        _apply_track_colour(first_instance, track_id)
 
-    return instance
+    return first_instance
 
 
 def clear_scene_objects(prefix: str = "") -> None:
@@ -217,41 +245,65 @@ def _get_or_load_asset(
     blend_path: Path,
     class_name: str,
     assets_root: Path,
-) -> Optional[bpy.types.Object]:
-    """Load the first mesh object from a .blend file, caching the result."""
+) -> List[str]:
+    """Load mesh object(s) from a .blend file and return their names (cached).
+
+    For most assets, loads the first mesh only.  For multi-part assets (e.g.
+    Dustbin), loads all mesh parts so the full model assembles at spawn time.
+    Use _ASSET_MESH_NAME to control which meshes are loaded per class.
+    """
     key = str(blend_path)
 
     if key in _loaded_cache:
-        name = _loaded_cache[key]
-        return bpy.data.objects.get(name)
+        return _loaded_cache[key]
 
     if not blend_path.exists():
         import warnings
         warnings.warn(f"Asset not found: {blend_path}")
-        return None
+        _loaded_cache[key] = []
+        return []
 
     with bpy.data.libraries.load(str(blend_path.resolve()), link=False) as (src, dst):
         dst.objects = list(src.objects)
 
-    # Find the first mesh object
-    mesh_obj = None
+    mesh_override = _ASSET_MESH_NAME.get(class_name, "FIRST")  # sentinel = take first
+
+    mesh_objs = []
     for obj in dst.objects:
-        if obj is not None and obj.type == "MESH":
+        if obj is None or obj.type != "MESH":
+            continue
+        if mesh_override == "FIRST":
+            # Default: load only the first mesh found
             bpy.context.scene.collection.objects.link(obj)
-            obj.hide_render = True   # template is invisible — only instances render
+            obj.hide_render = True
             obj.hide_viewport = True
-            mesh_obj = obj
+            mesh_objs.append(obj)
+            break
+        elif mesh_override is None:
+            # Load ALL mesh parts (e.g. dustbin: wheels + lid + body)
+            bpy.context.scene.collection.objects.link(obj)
+            obj.hide_render = True
+            obj.hide_viewport = True
+            mesh_objs.append(obj)
+        elif obj.name == mesh_override:
+            # Load only the specifically named mesh
+            bpy.context.scene.collection.objects.link(obj)
+            obj.hide_render = True
+            obj.hide_viewport = True
+            mesh_objs.append(obj)
             break
 
-    if mesh_obj is None:
-        return None
+    if not mesh_objs:
+        _loaded_cache[key] = []
+        return []
 
     # Per-asset post-load setup
     if class_name == "stop sign":
-        _apply_stop_sign_texture(mesh_obj, assets_root)
+        _apply_stop_sign_texture(mesh_objs[0], assets_root)
 
-    _loaded_cache[key] = mesh_obj.name
-    return mesh_obj
+    names = [obj.name for obj in mesh_objs]
+    _loaded_cache[key] = names
+    return names
 
 
 def _apply_speed_limit_texture(obj: bpy.types.Object, speed_limit: int) -> None:

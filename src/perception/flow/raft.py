@@ -96,8 +96,11 @@ class RAFTFlowEstimator(FlowEstimator):
 
     def close(self) -> None:
         del self._model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Internal helpers

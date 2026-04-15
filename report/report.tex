@@ -1,0 +1,661 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{multirow}
+
+\usepackage[colorlinks=true, urlcolor=cyan, linkcolor=blue, citecolor=blue]{hyperref}
+
+\title{RBE549: Project 3 --- Einstein Vision\\
+\large Tesla-Inspired 3D Scene Understanding and Visualization}
+
+\author{
+\IEEEauthorblockN{Nishanth Adithya Chandramouli}
+\IEEEauthorblockA{Robotics Engineering\\
+Worcester Polytechnic Institute\\
+nchandramouli@wpi.edu}
+\and
+\IEEEauthorblockN{Chaitanya Sriram Gaddipati}
+\IEEEauthorblockA{Robotics Engineering\\
+Worcester Polytechnic Institute\\
+csgaddipati@wpi.edu}
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present \emph{Einstein Vision}, a Tesla FSD-inspired 3D visualization
+pipeline for autonomous driving scenes.  Given monocular video from a front-
+facing camera on a 2023 Tesla Model S, the system detects and tracks
+vehicles, pedestrians, lane markings, traffic lights, road signs, and
+miscellaneous scene objects, then renders a photorealistic Blender scene
+from a bird's-eye perspective.  The pipeline spans three phases of
+increasing sophistication: Phase~1 covers detection, depth estimation, and
+3D localisation; Phase~2 adds multi-object tracking, pedestrian pose, and
+fine-grained classification; Phase~3 introduces brake/turn-signal
+detection, ego-motion-compensated motion classification, and
+collision-risk prediction.  Our key architectural contributions are (1)
+fusing YOLO11~\cite{ultralytics2024yolo11} and YOLO-World~\cite{cheng2024yoloworld}
+to cover both standard COCO classes and open-vocabulary infrastructure
+objects in a single NMS-unified pass; (2) using CLIP~\cite{radford2021clip}
+for vehicle sub-type classification and speed-limit OCR fallback; and
+(3) applying a RAFT~\cite{teed2020raft} optical flow field together with
+fundamental-matrix RANSAC and Sampson-distance epipolar tests to separate
+independently-moving vehicles from camera ego-motion.
+\end{abstract}
+
+% ============================================================
+\section{Introduction}
+% ============================================================
+
+Autonomous vehicles must build a rich, real-time model of their surroundings
+from sensors that are inherently noisy and partial.  Modern driver-assistance
+HMIs---most visibly Tesla's Full Self-Driving visualisation dashboard---
+distil this model into a synthetic third-person view that conveys depth,
+motion, and semantic meaning at a glance.  Replicating this pipeline from
+scratch is a demanding integration task: it requires accurate single-frame
+detection, temporally consistent tracking, metric depth estimation,
+kinematic state estimation, and high-fidelity 3D rendering, all running
+in a coherent data flow.
+
+Our system, \emph{Einstein Vision}, addresses this challenge.  The input is
+raw MP4 video from the front camera of a 2023 Tesla Model S driving through
+13 diverse urban scenes.  The output is a Blender-rendered video that mirrors
+the Tesla FSD aesthetic: road surfaces, lane markings as B\'ezier curves,
+vehicle and pedestrian meshes placed at metric 3D positions with correct yaw,
+traffic signals with correct colour and arrow states, and Phase-3 overlays for
+brake lights, turn signals, motion arrows, and collision-risk highlights.
+
+The pipeline is implemented as a two-stage process.  The \emph{perception
+stage} (Python, PyTorch) processes each sampled frame to produce a structured
+\texttt{FrameData} record (detections, lanes, depth, flow) serialised to
+MessagePack and NumPy archives.  The \emph{rendering stage} (Blender/Python,
+\texttt{bpy}) reads those archives headlessly and renders each frame to a PNG.
+Both stages are driven by a single YAML configuration file so any model can be
+swapped without changing pipeline code.
+
+% ============================================================
+\section{Phase 1: Core Perception}
+% ============================================================
+
+\subsection{Object Detection}
+
+We fuse two YOLO-family models to cover the full set of required
+driving-scene classes.
+
+\textbf{YOLO11~\cite{ultralytics2024yolo11}} (weights: \texttt{yolo11x.pt})
+handles the 80 standard COCO classes.  We discard non-driving classes
+(furniture, food, sports equipment) and keep only:
+\emph{person, bicycle, car, motorcycle, bus, truck, traffic light, stop sign,
+fire hydrant}.
+
+\textbf{YOLO-World~\cite{cheng2024yoloworld}} (weights:
+\texttt{yolov8x-worldv2.pt}) handles open-vocabulary classes that COCO does
+not cover: \emph{traffic cone, traffic cylinder, traffic pole, dustbin,
+barrel, speed limit sign, road arrow marking, speed bump}.  We set a
+custom class list at runtime via \texttt{model.set\_classes()}, which
+inserts a text-embedding branch without retraining.
+
+The two models run independently on each frame.  Their detection lists are
+concatenated and then de-duplicated with a single batched NMS pass
+(IoU~$=~0.45$) so genuinely overlapping boxes from the same class compete
+against each other while boxes for different classes do not suppress one
+another.  Both models share the same confidence threshold of $0.30$.
+
+\subsection{Vehicle Sub-classification and Speed-Limit OCR}
+
+\textbf{Vehicle sub-types.}
+YOLO11 reports all light passenger vehicles as \texttt{car}.  To distinguish
+sedan / SUV / hatchback / pickup we crop each \texttt{car} bounding box and
+run a CLIP~\cite{radford2021clip} ViT-B/32 similarity against four text
+prompts, one per sub-type.  The text features are pre-encoded at
+initialisation so the per-frame cost is a single image-encoder forward pass
+plus a dot product.
+
+\textbf{Speed limit signs.}
+Detected \texttt{speed limit sign} crops are first tested for aspect
+ratio~$\le~2.0$ to filter diamond-shaped warning signs.  Valid crops are
+upscaled to a minimum 160~px short-side, converted to grayscale, Otsu-
+thresholded on the upper two-thirds (where the number lives), and passed
+to EasyOCR with a digit allowlist.  If EasyOCR returns a digit string that
+matches a valid US speed limit ($\{15, 20, \ldots, 75\}$ in steps of 5),
+that value is recorded.  When OCR fails (blurry crop, severe occlusion), the
+same crop is classified with CLIP against fifteen speed-limit text prompts as
+a fallback.
+
+\subsection{Lane Detection}
+
+We use a fine-tuned Mask~R-CNN~\cite{he2017maskrcnn} (ResNet-50-FPN backbone)
+with 7 output classes: background plus six lane types (solid-white, dashed-
+white, solid-yellow, double, and two additional generic classes mapped to the
+nearest canonical type).  The model outputs per-instance soft masks at full
+input resolution.
+
+Each binary mask is thresholded at $0.50$ and requires at least 150 active
+pixels to be accepted.  From the surviving pixels we fit a second-degree
+polynomial $x = f(y)$ to obtain a lane curve aligned with the driving
+direction, then uniformly sample 10 B\'ezier control points along the curve.
+These 2D pixel-space points are later lifted to 3D ego-frame coordinates
+using the ground-plane Inverse Perspective Mapping (IPM) approach described
+in Section~\ref{sec:depth}.
+
+A lightweight IoU-based lane tracker assigns consistent lane IDs across
+frames by matching each new detection to the nearest existing track by
+centroid proximity (threshold 80~px).  Unmatched tracks are aged out after
+10 frames.
+
+\subsection{Traffic Light Classification}
+
+\textbf{Colour.}
+For each \texttt{traffic light} bounding box we divide the crop into three
+equal horizontal strips (top~=~red, middle~=~yellow, bottom~=~green) and
+compute the mean brightness of the HSV $V$-channel in each strip.  The strip
+with the highest mean brightness above a minimum threshold ($V > 60$) is
+taken as the active colour.  This 3-strip heuristic is fast, requires no
+colour calibration, and handles different traffic-light housing styles that
+HSV hue-range matching misclassifies under non-neutral lighting.
+
+\textbf{Arrow direction.}
+After the colour strip is identified we attempt arrow detection on that strip.
+The colour-specific HSV mask is morphologically cleaned (open then close with
+a $3\times3$ elliptical kernel) and the largest contour is extracted.  A
+circularity test
+\begin{equation}
+  C = \frac{4\pi \cdot \text{area}}{\text{perimeter}^2}
+\end{equation}
+rejects round bulbs ($C > 0.55$).  For non-circular contours the image
+moments give a central axis orientation:
+\begin{equation}
+  \theta = \tfrac{1}{2}\arctan\!\left(\frac{2\mu_{11}}{\mu_{20} - \mu_{02}}\right)
+\end{equation}
+Near-vertical axes ($|\theta| > 55^\circ$) are labelled
+\emph{straight}; near-horizontal axes are resolved to \emph{left} or
+\emph{right} by comparing the centroid $x$-position to the medial axis
+of the contour points.
+
+\subsection{Depth Estimation and 3D Localisation}
+\label{sec:depth}
+
+\textbf{Monocular depth.}
+We use Depth Anything V2 Metric Outdoor (Large)~\cite{li2024depthanything},
+accessed via the HuggingFace Transformers interface.  The model produces
+float32 metric depth maps (metres) at native frame resolution via bicubic
+upsampling of the internal feature-resolution prediction.  Batches of frames
+are processed together on the GPU to amortise model startup overhead.
+
+\textbf{Lifting detections to 3D.}
+For each detection the depth is sampled as the median of a $9\times9$ pixel
+patch centred on the bounding-box centroid.  Patch-median is preferred over
+a single-pixel lookup because depth models are often inaccurate at object
+boundaries.  If the sampled depth is below $1.0$~m (indicating an unreliable
+prediction) we fall back to a perspective-height estimate:
+\begin{equation}
+  d = \frac{f_y \cdot H_{\text{real}}}{h_{\text{px}}}
+\end{equation}
+where $H_{\text{real}}$ is a class-specific real-world height (e.g.\
+$1.5$~m for a car) and $h_{\text{px}}$ is the bounding-box height in pixels.
+The 3D camera-frame point is then:
+\begin{equation}
+  \mathbf{x}_{\text{cam}} =
+  \begin{bmatrix}
+    \dfrac{(u - c_x)\,d}{f_x} \\[6pt]
+    \dfrac{(v - c_y)\,d}{f_y} \\[6pt]
+    d
+  \end{bmatrix}
+\end{equation}
+and is transformed into the ego (vehicle body) frame via the camera extrinsic
+matrix.
+
+\textbf{Lane lifting.}
+Lane B\'ezier control points are lifted to 3D via IPM: given a flat-ground
+assumption with camera height $h_c$ above ground and pitch $\phi$, each
+pixel $(u, v)$ maps to a ground-plane point.  When a dense depth map is
+available the IPM ground-plane depth is cross-validated against the depth
+map; the depth-map value takes precedence if the two agree within a factor
+of 2.
+
+\textbf{Yaw estimation.}
+For each vehicle we estimate heading angle geometrically.  A vehicle of
+length $L$ and width $W$ viewed at yaw $\theta$ subtends a projected ground
+width proportional to $W\cos\theta + L\sin\theta$.  We invert this relationship
+using the measured projected width (bounding-box width $\times$ depth / $f_x$)
+to recover $\theta \in [0, \pi/2]$, then resolve the front/rear ambiguity
+from the sign of the horizontal position relative to the ego vehicle.
+
+% ============================================================
+\section{Phase 2: Advanced Features}
+% ============================================================
+
+\subsection{Multi-Object Tracking with DeepSORT}
+
+We use DeepSORT~\cite{wojke2017deepsort} (via \texttt{deep-sort-realtime})
+with a MobileNet appearance embedder.  Detections from the fused YOLO
+pipeline are forwarded to the tracker each frame; the tracker returns
+confirmed track IDs after $n_{\text{init}} = 3$ consecutive detections.
+Lost tracks are retained for up to 30 frames before deletion, which
+handles short occlusions without creating ghost detections.
+
+Consistent track IDs are critical for Phase-3 features: brake-light
+detection uses a per-track temporal buffer to distinguish single-frame
+reflections from sustained illumination, and the collision predictor
+maintains a position history per track to estimate velocity.
+
+\subsection{Pedestrian Pose Estimation}
+
+Pedestrian pose is estimated with YOLO11x-pose, which predicts the 17
+standard COCO body keypoints (nose, eyes, ears, shoulders, elbows, wrists,
+hips, knees, ankles) together with per-keypoint confidence scores from the
+bounding-box crop.  For schema compatibility with the 133-keypoint RTMW
+format used elsewhere, the 17-keypoint output is zero-padded: the first 17
+entries hold the COCO keypoints and the remaining 116 (face, hand, foot
+keypoints) are set to zero.  The Blender pose renderer reads the
+non-zero entries and skips the zero-padded skeleton segments, so the
+rendering degrades gracefully to a partial skeleton rather than
+drawing artefact limbs.
+
+\subsection{Traffic Sign Detection and OCR}
+
+Stop signs and speed limit signs are detected by YOLO-World and YOLO11
+respectively (see Section II-A).  After detection, EasyOCR extracts the
+numeric value from speed limit sign crops as described in Section II-B.
+Confirmed detections are serialised with their 3D ego-frame position so
+the Blender renderer can spawn the correct sign asset at the correct location.
+
+\subsection{Road Arrow Detection}
+
+Ground arrow markings (turn arrows, keep-right, etc.) are detected by
+YOLO-World with the label \texttt{road arrow marking}.  The bounding-box mask
+is extracted and the largest contour found.  Principal Component Analysis on
+the contour points yields two eigenvectors; the primary eigenvector's angle
+relative to the image vertical is thresholded to classify the arrow as
+\emph{straight}, \emph{left}, or \emph{right}.
+
+\subsection{Miscellaneous Object Detection}
+
+Traffic cones, traffic cylinders, traffic poles, dustbins, and barrels are
+detected by YOLO-World using the open-vocabulary class list in
+\texttt{configs/models.yaml}.  Each object class has a corresponding 3D
+asset in the Blender asset library.  Because these objects have small or
+irregular shapes, the depth-map fallback (perspective height) is used for
+objects shorter than 1~m.
+
+% ============================================================
+\section{Phase 3: Bells and Whistles}
+% ============================================================
+
+\subsection{Brake Light and Turn Signal Detection}
+
+We analyse three regions of interest (ROIs) extracted from each tracked
+vehicle's bounding box.
+
+\textbf{Brake lights.}
+The bottom $40\,\%$ of the bounding box (the tail-light band) is converted
+to HSV and the fraction of pixels satisfying a bright-red HSV range
+($H \in [0^\circ,10^\circ]\cup[160^\circ,179^\circ]$, $S > 80$,
+$V > 120$) is computed.  A brake-light-on event is triggered when this
+red-pixel density exceeds $5\,\%$.
+
+\textbf{Turn signals.}
+The left and right $30\,\%$ vertical strips of the lower $60\,\%$ of the
+bounding box are analysed for amber ($H \in [8^\circ,28^\circ]$, $S > 110$,
+$V > 120$) pixel density.  Turn signals blink, so a temporal history of 8
+frames is maintained per track.  A turn signal is classified as active when
+(a) the mean amber density over the history exceeds $0.5\times$ the threshold
+($2\,\%$) \emph{and} (b) at least one frame in the recent history exceeds the
+full threshold ($4\,\%$).  This two-condition gate rejects brief reflections
+(which fail condition~a) and persistent but faint ambient colour (which fail
+condition~b).
+
+\textbf{Blender rendering.}
+Active brake lights drive the emissive intensity of the tail-light material
+slots on the vehicle mesh.  Left or right turn-signal activation drives
+the corresponding indicator emissive slot.  The light animator
+(\texttt{blender/light\_animator.py}) interpolates emissive values across
+frames so blinking is visible in the rendered video.
+
+\subsection{Moving vs.\ Parked Vehicle Classification}
+
+Classifying independently-moving vehicles in the presence of strong
+ego-motion is a fundamentally ill-posed problem for pure optical-flow
+magnitude thresholding.  We address this with a two-stage approach.
+
+\textbf{Stage 1 — background flow estimation.}
+We compute the median optical flow vector $(b_x, b_y)$ over the entire frame.
+Because moving objects typically occupy less than $50\,\%$ of the image, the
+frame-wide median is a robust estimate of the camera-induced background flow.
+The per-vehicle residual flow is then
+\begin{equation}
+  \Delta\mathbf{u}_i = \mathbf{u}_i - (b_x, b_y)
+\end{equation}
+where $\mathbf{u}_i$ is the median flow inside the vehicle's bounding box.
+
+\textbf{Stage 2 — Sampson distance test.}
+We additionally estimate the fundamental matrix $F$ of the current frame
+transition from 800 randomly sampled pixel correspondences using
+RANSAC~\cite{hartley2004multiple} (\texttt{cv2.FM\_RANSAC}).  $F$ encodes
+the camera's rotational and translational ego-motion.  For a stationary
+scene point the Sampson distance
+\begin{equation}
+  d_S(\mathbf{x}, \mathbf{x}') =
+    \frac{(\mathbf{x}'^T F \mathbf{x})^2}
+         {(F\mathbf{x})_0^2 + (F\mathbf{x})_1^2 + (F^T\mathbf{x}')_0^2 + (F^T\mathbf{x}')_1^2}
+\end{equation}
+should be near zero; for an independently-moving point it will be large.
+A vehicle is classified as \emph{moving} when \emph{either}:
+\begin{itemize}
+  \item its residual flow magnitude $\|\Delta\mathbf{u}_i\| > 2.0$~px/frame, \emph{or}
+  \item its Sampson distance $d_S > 4.0$.
+\end{itemize}
+The dual-criterion design handles the failure modes noted in previous work:
+the flow threshold catches vehicles moving faster than the ego vehicle
+(visible residual) while the Sampson test catches vehicles moving at similar
+speed to ego (small residual but significant epipolar deviation).
+
+Optical flow itself is computed by RAFT (Large, \texttt{raft-things}
+weights)~\cite{teed2020raft} with 20 recurrent update iterations, operating
+on pairs of consecutive sampled frames after divisibility-by-8 padding.
+
+\subsection{Collision Risk Prediction (Extra Credit)}
+
+The collision predictor maintains a rolling 10-frame position history per
+confirmed track.  Each call to \texttt{update()} appends the current
+ego-frame 3D position $(x, y, z)$ to the per-track deque and fits a linear
+velocity:
+\begin{equation}
+  \mathbf{v}_i = \frac{1}{N-1}\sum_{k=1}^{N-1}
+    \bigl(\mathbf{p}_{i,k} - \mathbf{p}_{i,k-1}\bigr)
+\end{equation}
+Tracks with fewer than 3 entries are skipped to avoid false positives
+from newly-appeared objects.
+
+Predicted positions 15 frames ahead ($\approx 2$~s at the default
+7.2~fps sampling rate) are computed as:
+\begin{equation}
+  \hat{\mathbf{p}}_i = \mathbf{p}_i + \mathbf{v}_i \cdot T_{\text{pred}}
+\end{equation}
+All pedestrian--vehicle track pairs are checked: if the predicted
+3D Euclidean distance between a pedestrian and a vehicle falls below
+$5.0$~m, both tracks are flagged with \texttt{collision\_risk = True}.
+The Blender renderer responds by applying a red emissive overlay to the
+flagged meshes, giving the operator an immediate visual warning.
+
+% ============================================================
+\section{Pipeline Architecture}
+% ============================================================
+
+\subsection{Data Flow}
+
+Figure~\ref{fig:pipeline} illustrates the end-to-end data flow.  The
+perception stage (\texttt{scripts/run\_perception.py}) reads frames at a
+configurable stride, runs all models in sequence, and writes one
+MessagePack file (\texttt{FrameData}) and one or two NumPy archives (depth,
+flow) per frame.  The rendering stage (\texttt{blender/scene\_builder.py})
+reads those archives headlessly under Blender's embedded Python interpreter
+and renders each frame to a PNG that is later assembled into a video.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{figs/pipeline_diagram.png}
+  \caption{End-to-end pipeline architecture.  Perception (left) produces
+  serialised per-frame records; Blender rendering (right) consumes them
+  headlessly.}
+  \label{fig:pipeline}
+\end{figure}
+
+\subsection{Per-Frame Processing Order}
+
+Within the perception stage, models run in the following order to respect
+data dependencies:
+\begin{enumerate}
+  \item \textbf{Depth} — Depth Anything V2 produces the metric depth map.
+  \item \textbf{Detection} — YOLO11 + YOLO-World fused with cross-model NMS.
+  \item \textbf{Sub-classification} — CLIP vehicle sub-type and OCR speed limit.
+  \item \textbf{Tracking} — DeepSORT assigns/updates track IDs.
+  \item \textbf{3D Lifting} — \texttt{lift\_detections()} fills \texttt{pos\_3d} and \texttt{depth}.
+  \item \textbf{Yaw} — Geometric yaw estimation per vehicle.
+  \item \textbf{Traffic lights} — HSV 3-strip colour + arrow detection.
+  \item \textbf{Lanes} — Mask R-CNN segmentation + IoU lane tracker.
+  \item \textbf{Pose} — YOLO11x-pose for person detections.
+  \item \textbf{Phase 3} — Brake/turn (BrakeTurnDetector), flow (RAFT),
+    motion (MotionClassifier), collision (CollisionPredictor).
+\end{enumerate}
+
+\subsection{Configuration and Model Swapping}
+
+All model choices, weight paths, confidence thresholds, and hyperparameters
+live in \texttt{configs/models.yaml}.  The factory module
+(\texttt{src/perception/factory.py}) reads the \texttt{model} key under each
+section and instantiates the corresponding concrete subclass of the relevant
+abstract base class.  Swapping, say, the depth estimator from
+\texttt{depth\_anything\_v2} to \texttt{depth\_pro} requires a single YAML
+edit and no code changes.
+
+Table~\ref{tab:config} summarises the configuration used for all results
+presented in this report.
+
+\begin{table}[H]
+\centering
+\caption{Perception pipeline configuration.}
+\label{tab:config}
+\begin{tabular}{lp{4.2cm}}
+\toprule
+Component & Configuration \\
+\midrule
+Depth model        & Depth Anything V2 Metric Outdoor-L \\
+Detection          & YOLO11x + YOLO-World v8x (conf $0.30$, IoU $0.45$) \\
+Sub-classifier     & CLIP ViT-B/32 + EasyOCR \\
+Lane detector      & Mask R-CNN ResNet-50-FPN (conf $0.50$) \\
+Tracker            & DeepSORT MobileNet ($\max\_\text{age}=30$, $n_\text{init}=3$) \\
+Pose               & YOLO11x-pose (17 COCO keypoints) \\
+Optical flow       & RAFT-Large, \texttt{raft-things}, 20 iters \\
+Brake threshold    & Red density $> 5\%$ \\
+Turn threshold     & Amber density $> 4\%$, history 8 frames \\
+Motion: flow       & Residual $> 2.0$~px/frame \\
+Motion: Sampson    & $d_S > 4.0$ \\
+Collision horizon  & 15 frames, warn $< 5.0$~m \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+\section{Blender Rendering}
+% ============================================================
+
+The Blender rendering stage reads the serialised \texttt{FrameData} records
+and rebuilds the 3D scene for each frame from scratch.
+
+\textbf{Asset placement.}  The asset manager (\texttt{blender/asset\_manager.py})
+maintains a library of \texttt{.blend} mesh files, one per object class
+(sedan, SUV, pickup, truck, bus, motorcycle, bicycle, pedestrian, traffic
+light pole-and-head assembly, stop sign, speed limit sign, traffic cone,
+traffic cylinder, dustbin).  For each frame, vehicle and pedestrian meshes
+are instantiated at their 3D ego-frame positions with yaw applied as a
+Z-axis rotation.  Per-track colour assignment ensures that the same vehicle
+carries the same mesh colour throughout the video, aiding visual continuity.
+
+\textbf{Lane curves.}  Lanes are rendered as B\'ezier curves via Geometry
+Nodes (\texttt{blender/lane\_renderer.py}).  The 3D B\'ezier control points
+from the perception stage are fed directly to a curve object, and a Geometry
+Nodes modifier extrudes the curve profile into a flat lane-marking strip.
+Solid and dashed lane types use different material slots with animated
+dash patterns.
+
+\textbf{Lighting.}  A dynamic HDRI sky plus a sun lamp tracks a simulated
+solar arc through the sequence.  The light animator
+(\texttt{blender/light\_animator.py}) adjusts vehicle tail-light and
+indicator emissive intensities per frame based on the brake and turn-signal
+flags from Phase~3.
+
+\textbf{Camera.}  The Blender camera is configured from the calibration YAML
+($f_x, f_y, c_x, c_y$, height above ground, pitch) so that the virtual
+camera matches the real sensor geometry.
+
+% ============================================================
+\section{Qualitative Results}
+% ============================================================
+
+Figures~\ref{fig:phase1_out}, \ref{fig:phase2_out}, and \ref{fig:phase3_out}
+show representative rendered frames from Phase~1, Phase~2, and Phase~3
+respectively.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{figs/phase1_render.png}
+  \caption{Phase~1 output: vehicles and pedestrians placed at metric 3D
+  positions, lane B\'ezier curves rendered as white/yellow markings, stop
+  sign and traffic light assets placed at detected locations.}
+  \label{fig:phase1_out}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{figs/phase2_render.png}
+  \caption{Phase~2 output: pedestrian skeletons (17 COCO keypoints), vehicle
+  sub-type labels (sedan / SUV / pickup), speed limit sign with OCR-extracted
+  value, and road arrow markings.}
+  \label{fig:phase2_out}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{figs/phase3_render.png}
+  \caption{Phase~3 output: brake light emissive glow (red) on a braking
+  sedan, turn-signal amber glow on a turning vehicle, motion arrows on
+  independently-moving vehicles, and red collision-risk overlays on a
+  pedestrian and nearby vehicle.}
+  \label{fig:phase3_out}
+\end{figure}
+
+Figure~\ref{fig:debug_overlay} shows the 2D debug overlay (generated by
+\texttt{scripts/make\_debug\_video.py}) that is produced alongside the
+Blender render.  This overlay draws bounding boxes, track IDs, depth
+estimates, lane masks, and optical flow magnitude on the original camera
+image, providing a diagnostic view of the perception stage outputs.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{figs/debug_overlay.png}
+  \caption{2D debug overlay showing detection bounding boxes with class
+  labels and track IDs, lane mask, and depth values at each bbox centre.
+  Green~=~moving, grey~=~parked.}
+  \label{fig:debug_overlay}
+\end{figure}
+
+% ============================================================
+\section{Challenges and Failure Modes}
+% ============================================================
+
+\textbf{Yaw estimation.}
+The geometric yaw estimator assumes each vehicle subtends a clean
+rectangular silhouette.  Partially occluded vehicles, tight front-quarter
+views, and vehicles at the frame boundary all violate this assumption,
+leading to yaw errors of $20$--$40^\circ$.  A learning-based 3D bounding
+box estimator (e.g.\ DD3D or BEVFusion) would reduce this error but
+requires calibrated stereo or LiDAR ground truth for training, which is
+not available for this dataset.
+
+\textbf{Depth scale drift.}
+While Depth Anything V2 is metric, the absolute scale drifts slightly
+across scenes.  Objects at ranges beyond approximately 40~m show $10$--$20\,\%$
+depth errors, causing distant vehicles to appear too large or too close in
+the Blender render.  A two-point scale calibration using known lane-width
+measurements would improve consistency.
+
+\textbf{Traffic light colour under night conditions.}
+The 3-strip brightness method assumes the active bulb is the brightest strip.
+In night scenes with strong ambient light pollution (sodium vapour street
+lamps produce a yellow-orange glow), the brightness baseline is elevated,
+occasionally causing misclassification of red lights as yellow or green.
+A learned detector or per-scene white-balance calibration would address this.
+
+\textbf{Ego-motion compensation.}
+The RANSAC fundamental-matrix approach requires sufficient parallax across
+the frame.  On near-straight highway sections where the forward translation
+dominates and there is little rotation, the estimated $F$ is degenerate and
+the Sampson test reverts to the residual-flow threshold alone.  A homography-
+based approach that models pure translation may be more robust in these cases.
+
+\textbf{Lane detection on faded markings.}
+The Mask R-CNN lane detector was fine-tuned on a dataset of clearly marked
+lanes.  Several scenes contain heavily worn or snow-covered lane markings that
+the model misses entirely.  Pseudo-label training on the target domain or a
+complementary drivable-area segmentation model could bridge this gap.
+
+% ============================================================
+\section{Author Contributions}
+% ============================================================
+
+\textbf{Nishanth Adithya Chandramouli:}
+Phase-3 motion classification (RAFT integration, Sampson distance, ego-motion
+compensation), collision predictor, brake/turn detector, Blender rendering
+pipeline (scene\_builder, light\_animator, lane\_renderer), debug visualisation.
+
+\textbf{Chaitanya Sriram Gaddipati:}
+Object detection pipeline (YOLO11 + YOLO-World fusion, NMS), vehicle
+sub-classifier (CLIP + EasyOCR), traffic light HSV classification and arrow
+detection, depth integration (Depth Anything V2), 3D localisation and yaw
+estimation, DeepSORT tracking integration, report writing.
+
+% ============================================================
+\begin{thebibliography}{10}
+
+\bibitem{ultralytics2024yolo11}
+Ultralytics,
+``YOLOv11: A state-of-the-art real-time object detection model,''
+2024.
+\url{https://docs.ultralytics.com/models/yolo11/}
+
+\bibitem{cheng2024yoloworld}
+T.~Cheng, L.~Song, Y.~Ge, W.~Liu, X.~Wang, and Y.~Shan,
+``YOLO-World: Real-Time Open-Vocabulary Object Detection,''
+\emph{arXiv:2401.17270}, 2024.
+
+\bibitem{radford2021clip}
+A.~Radford \emph{et al.},
+``Learning Transferable Visual Models From Natural Language Supervision,''
+in \emph{Proc.\ ICML}, 2021.
+
+\bibitem{he2017maskrcnn}
+K.~He, G.~Gkioxari, P.~Doll{\'a}r, and R.~Girshick,
+``Mask R-CNN,''
+in \emph{Proc.\ ICCV}, 2017.
+
+\bibitem{li2024depthanything}
+Y.~Li \emph{et al.},
+``Depth Anything V2,''
+\emph{arXiv:2406.09414}, 2024.
+
+\bibitem{teed2020raft}
+Z.~Teed and J.~Deng,
+``RAFT: Recurrent All-Pairs Field Transforms for Optical Flow,''
+in \emph{Proc.\ ECCV}, 2020.
+
+\bibitem{wojke2017deepsort}
+N.~Wojke, A.~Bewley, and D.~Paulus,
+``Simple Online and Realtime Tracking with a Deep Association Metric,''
+in \emph{Proc.\ ICIP}, 2017.
+
+\bibitem{hartley2004multiple}
+R.~Hartley and A.~Zisserman,
+\emph{Multiple View Geometry in Computer Vision}, 2nd~ed.
+Cambridge University Press, 2004.
+
+\bibitem{mousavian20163dbb}
+A.~Mousavian, D.~Anguelov, J.~Flynn, and J.~Ko{\v{s}}eck{\'a},
+``3D Bounding Box Estimation Using Deep Learning and Geometry,''
+in \emph{Proc.\ CVPR}, 2017.
+
+\bibitem{zhou2022detic}
+X.~Zhou, V.~Koltun, and P.~Kr{\"a}henb{\"u}hl,
+``Detecting Twenty-Thousand Classes using Image-level Supervision,''
+in \emph{Proc.\ ECCV}, 2022.
+
+\end{thebibliography}
+
+\end{document}

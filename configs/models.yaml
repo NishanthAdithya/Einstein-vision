@@ -25,8 +25,14 @@ detection:
     - barrel
     - stop sign
     - speed limit sign
-    - round road sign
+    - circular speed limit sign
+    - road sign with number
     - road arrow marking
+    # Phase 3 / extra credit
+    - speed bump
+    - speed hump
+    - raised crosswalk
+    - road bump
 
 lanes:
   model: maskrcnn                   # maskrcnn | yolopv2
@@ -56,3 +62,17 @@ flow:
 
 vehicle_subclassifier:
   device: cuda                      # cuda | cpu
+
+phase3:
+  # Brake light / turn signal detector
+  brake_history_len: 8
+  brake_thresh: 0.05
+  turn_thresh:  0.04
+
+  # Motion classifier (optical flow + Sampson distance)
+  flow_residual_thresh: 2.0         # pixels/frame residual to flag as moving
+  sampson_thresh:       4.0         # Sampson distance to flag as moving
+
+  # Collision predictor (extra credit)
+  predict_frames:  15               # frames ahead to project (~2 s at 7.2 fps)
+  warning_dist_m:  5.0              # metres — pedestrian/vehicle warning radius

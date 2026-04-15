@@ -62,6 +62,7 @@ def _detection_to_dict(det: Detection) -> dict:
         "turn_signal": det.turn_signal,
         "traffic_light_state": det.traffic_light_state,
         "velocity_3d": list(det.velocity_3d),
+        "collision_risk": det.collision_risk,
     }
 
 
@@ -83,6 +84,7 @@ def _dict_to_detection(d: dict) -> Detection:
         turn_signal=d["turn_signal"],
         traffic_light_state=d.get("traffic_light_state"),
         velocity_3d=tuple(d["velocity_3d"]),
+        collision_risk=d.get("collision_risk"),
     )
 
 

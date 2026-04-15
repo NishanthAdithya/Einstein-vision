@@ -31,9 +31,15 @@ _WORLD_NAME_MAP = {
     "barrel":           "barrel",
     "stop sign":        "stop sign",
     "speed limit sign": "speed limit sign",
-    "round road sign":  "speed limit sign",
+    "circular speed limit sign": "speed limit sign",
+    "road sign with number":     "speed limit sign",
     "road arrow":       "road arrow marking",
     "road arrow marking": "road arrow marking",
+    # Phase 3 / extra credit — speed bumps
+    "speed bump":       "speed bump",
+    "speed hump":       "speed bump",
+    "raised crosswalk": "speed bump",
+    "road bump":        "speed bump",
 }
 
 
